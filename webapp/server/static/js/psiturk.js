@@ -77,12 +77,14 @@ socket.on('start_game', function(data) {
     $('#reset-game').hide();
     $('#game-title').show();
     enable_key_listener();
+    enable_controller_listener();
     graphics_start(graphics_config);
 });
 
 socket.on('reset_game', function(data) {
     graphics_end();
     disable_key_listener();
+    disable_controller_listener();
     $("#overcooked").empty();
     $("#reset-game").show();
     setTimeout(function() {
@@ -93,6 +95,7 @@ socket.on('reset_game', function(data) {
         };
         graphics_start(graphics_config);
         enable_key_listener();
+        enable_controller_listener();
 
         // Propogate game stats to parent window (psiturk)
         window.top.postMessage({ name : "data", data : data.data, done : false}, "*");
@@ -108,6 +111,7 @@ socket.on('end_game', function(data) {
     // Hide game data and display game-over html
     graphics_end();
     disable_key_listener();
+    disable_controller_listener();
     $('#game-title').hide();
     $('#game-over').show();
     $("#overcooked").empty();
@@ -178,6 +182,91 @@ function enable_key_listener() {
 function disable_key_listener() {
     $(document).off('keydown');
 };
+
+
+/* * * * * * * * * * * * * * * * * * 
+ * Game Controller Event Listener *
+ * * * * * * * * * * * * * * * * * */
+
+window.gamepadState = {
+    lastAction: null,
+    lastButtonState: {},
+    pollInterval: null,
+    deadzone: 0.3  // Analog stick deadzone threshold
+};
+
+function enable_controller_listener() {
+    // Start polling for gamepad input
+    window.gamepadState.pollInterval = setInterval(pollGamepad, 100); // Poll every 100ms
+}
+
+function disable_controller_listener() {
+    // Stop polling for gamepad input
+    if (window.gamepadState.pollInterval) {
+        clearInterval(window.gamepadState.pollInterval);
+        window.gamepadState.pollInterval = null;
+    }
+    window.gamepadState.lastAction = null;
+    window.gamepadState.lastButtonState = {};
+}
+
+function pollGamepad() {
+    const gamepads = navigator.getGamepads();
+    if (!gamepads || gamepads.length === 0) return;
+    
+    // Use the first connected gamepad
+    const gamepad = gamepads[0];
+    if (!gamepad) return;
+    
+    let action = null;
+    
+    // Check D-pad buttons (buttons 12-15 on standard gamepad)
+    if (gamepad.buttons[12] && gamepad.buttons[12].pressed) {
+        action = 'UP';
+    } else if (gamepad.buttons[13] && gamepad.buttons[13].pressed) {
+        action = 'DOWN';
+    } else if (gamepad.buttons[14] && gamepad.buttons[14].pressed) {
+        action = 'LEFT';
+    } else if (gamepad.buttons[15] && gamepad.buttons[15].pressed) {
+        action = 'RIGHT';
+    }
+    
+    // Check left analog stick (axes 0 and 1)
+    if (!action && gamepad.axes.length >= 2) {
+        const xAxis = gamepad.axes[0];
+        const yAxis = gamepad.axes[1];
+        
+        // Apply deadzone
+        if (Math.abs(xAxis) > window.gamepadState.deadzone || Math.abs(yAxis) > window.gamepadState.deadzone) {
+            // Determine dominant direction
+            if (Math.abs(xAxis) > Math.abs(yAxis)) {
+                action = xAxis > 0 ? 'RIGHT' : 'LEFT';
+            } else {
+                action = yAxis > 0 ? 'DOWN' : 'UP';
+            }
+        }
+    }
+    
+    // Check B button (button 1 on standard gamepad) for interact/pickup
+    if (gamepad.buttons[1] && gamepad.buttons[1].pressed) {
+        // Only send action if button wasn't pressed in last poll (prevent spam)
+        if (!window.gamepadState.lastButtonState[1]) {
+            socket.emit('action', { 'action' : 'SPACE' });
+            window.gamepadState.lastButtonState[1] = true;
+        }
+    } else {
+        window.gamepadState.lastButtonState[1] = false;
+    }
+    
+    // Send movement action if it changed
+    if (action && action !== window.gamepadState.lastAction) {
+        socket.emit('action', { 'action' : action });
+        window.gamepadState.lastAction = action;
+    } else if (!action && window.gamepadState.lastAction) {
+        // Reset when no direction is pressed
+        window.gamepadState.lastAction = null;
+    }
+}
 
 
 /* * * * * * * * * * * * 
