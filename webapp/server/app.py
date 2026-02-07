@@ -416,7 +416,7 @@ def on_create(data):
         params = data.get('params', {})
         #hardcoded since there is no input for toggling this flag
         #defnitely want to change this in the future
-        params["mdp_params"] = {"old_dynamics":True}
+        params["mdp_params"] = {"old_dynamics":False}
         game_name = data.get('game_name', 'overcooked')
         _create_game(user_id, game_name, params)
     
