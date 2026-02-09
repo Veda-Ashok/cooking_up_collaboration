@@ -7,8 +7,8 @@
     "MAX_FPS" : 30,
     "psiturk" : {
         "experimentParams" : {
-            "layouts" : ["counter_circuit", "cramped_room"],
-            "gameTime" : 11,
+            "layouts" : ["cramped_room"],
+            "gameTime" : 30,
             "playerZero" : "human",
             "playerOne" : "human",
             "randomized" : true

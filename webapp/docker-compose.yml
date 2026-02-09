@@ -11,4 +11,6 @@ services:
             FLASK_ENV: "${BUILD_ENV:-production}"
         ports:
             - "80:5000"
+        volumes:
+            - ./server/data:/app/data
         

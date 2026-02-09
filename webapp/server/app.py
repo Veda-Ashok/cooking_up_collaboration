@@ -6,6 +6,7 @@ if os.getenv('FLASK_ENV', 'production') == 'production':
 
 # All other imports must come after patch to ensure eventlet compatibility
 import pickle, queue, atexit, json, logging
+from datetime import datetime
 from threading import Lock
 from utils import ThreadSafeSet, ThreadSafeDict
 from flask import Flask, render_template, jsonify, request
@@ -55,6 +56,10 @@ PSITURK_CONFIG = json.dumps(CONFIG['psiturk'])
 
 # Default configuration for tutorial
 TUTORIAL_CONFIG = json.dumps(CONFIG['tutorial'])
+
+# Directory for saving trajectory data
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'trajectories')
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # Global queue of available IDs. This is how we synch game creation and keep track of how many games are in memory
 FREE_IDS = queue.Queue(maxsize=MAX_GAMES)
@@ -110,6 +115,49 @@ socketio = SocketIO(app, cors_allowed_origins="*", logger=app.config['DEBUG'])
 handler = logging.FileHandler(LOGFILE)
 handler.setLevel(logging.ERROR)  
 app.logger.addHandler(handler)  
+
+
+#################################
+# Trajectory Data Saving        #
+#################################
+
+def save_trajectory_data(data, game_id):
+    """
+    Save trajectory data to JSON file
+    
+    Args:
+        data: Dictionary containing trajectory data with 'uid' and 'trajectory' keys
+        game_id: ID of the game session
+    """
+    if not data or 'trajectory' not in data or len(data['trajectory']) == 0:
+        return
+    
+    # Determine game type based on player types
+    game_type = "unknown"
+    if len(data['trajectory']) > 0:
+        first_transition = data['trajectory'][0]
+        player_0_is_human = first_transition.get('player_0_is_human', False)
+        player_1_is_human = first_transition.get('player_1_is_human', False)
+        
+        if player_0_is_human and player_1_is_human:
+            game_type = "human-human"
+        elif player_0_is_human and not player_1_is_human:
+            game_type = "human-ai"
+        elif not player_0_is_human and player_1_is_human:
+            game_type = "ai-human"
+        else:
+            game_type = "ai-ai"
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"game_{game_id}_{game_type}_{timestamp}.json"
+    filepath = os.path.join(DATA_DIR, filename)
+    
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
+        app.logger.info(f"Saved trajectory data to {filename}")
+    except Exception as e:
+        app.logger.error(f"Failed to save trajectory data: {e}")
 
 
 #################################
@@ -540,6 +588,7 @@ def play_game(game, fps=30):
         if status == Game.Status.RESET:
             with game.lock:
                 data = game.get_data()
+            save_trajectory_data(data, game.id)
             socketio.emit('reset_game', { "state" : game.to_json(), "timeout" : game.reset_timeout, "data" : data}, room=game.id)
             socketio.sleep(game.reset_timeout/1000)
         else:
@@ -548,6 +597,7 @@ def play_game(game, fps=30):
     
     with game.lock:
         data = game.get_data()
+        save_trajectory_data(data, game.id)
         socketio.emit('end_game', { "status" : status, "data" : data }, room=game.id)
 
         if status != Game.Status.INACTIVE:

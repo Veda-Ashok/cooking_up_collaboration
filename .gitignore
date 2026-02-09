@@ -6,3 +6,6 @@ node_modules/
 **/old/
 **/master_agents/
 **/__pycache__/
+
+.venv/
+webapp/server/data/trajectories/*.json
