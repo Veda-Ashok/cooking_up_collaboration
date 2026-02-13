@@ -36,16 +36,20 @@ Currently the webapp is configured for Amazon Mechanical Turk (but I modified it
 
 ### Trajectory Data Format
 
-Files are saved with the naming convention: `game_{game_id}_{game_type}_{timestamp}.json`
+Files are saved with the naming convention: `game_{game_id}_{session_id}_{game_type}_{timestamp}.json`
 
 Example filenames:
-- `game_0_human-human_20260208_175230.json`
-- `game_1_human-ai_20260208_175315.json`
+- `game_0_a3f2b1c4_human-human_20260208_175230.json`
+- `game_1_b7e9d2f1_human-ai_20260208_175315.json`
 
 Each JSON file contains:
 ```json
 {
     "uid": "unique_identifier_timestamp",
+    "session_id": "a3f2b1c4",
+    "game_id": 0,
+    "game_type": "human-human",
+    "timestamp": "20260208_175230",
     "trajectory": [
         {
             "state": "<OvercookedState JSON>",
@@ -68,3 +72,24 @@ Each JSON file contains:
 ```
 
 The `trajectory` array contains all state-action transitions for the entire game session.
+
+### Screenshot Data
+
+Screenshots are automatically saved alongside trajectory data in the `data/screenshots/` directory.
+
+Directory naming convention: `game_{game_id}_{session_id}_{game_type}_{timestamp}/`
+
+Example screenshot directories:
+- `game_0_a3f2b1c4_human-human_20260208_175230/`
+  - `frame_0000.png` (first frame)
+  - `frame_0010.png`
+  - `frame_0020.png`
+  - `frame_0030.png`
+  - ...
+  - `frame_0900.png` (last frame)
+
+**Screenshot Sampling:**
+- The game runs at 30 FPS (frames per second)
+- Screenshots are saved every 10 frames
+- This means one screenshot is captured every ~0.33 seconds of gameplay
+- A 30-second game will generate approximately 90 screenshots

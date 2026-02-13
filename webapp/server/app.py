@@ -5,13 +5,16 @@ if os.getenv('FLASK_ENV', 'production') == 'production':
     eventlet.monkey_patch()
 
 # All other imports must come after patch to ensure eventlet compatibility
-import pickle, queue, atexit, json, logging
+import pickle, queue, atexit, json, logging, uuid
 from datetime import datetime
 from threading import Lock
 from utils import ThreadSafeSet, ThreadSafeDict
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, join_room, leave_room, emit
 from game import OvercookedGame, OvercookedTutorial, Game, OvercookedPsiturk
+from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
+from overcooked_ai_py.mdp.overcooked_mdp import OvercookedState
+import pygame
 import game
 
 
@@ -60,6 +63,10 @@ TUTORIAL_CONFIG = json.dumps(CONFIG['tutorial'])
 # Directory for saving trajectory data
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'trajectories')
 os.makedirs(DATA_DIR, exist_ok=True)
+
+# Directory for saving screenshot data
+SCREENSHOTS_DIR = os.path.join(os.path.dirname(__file__), 'data', 'screenshots')
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
 # Global queue of available IDs. This is how we synch game creation and keep track of how many games are in memory
 FREE_IDS = queue.Queue(maxsize=MAX_GAMES)
@@ -121,16 +128,21 @@ app.logger.addHandler(handler)
 # Trajectory Data Saving        #
 #################################
 
-def save_trajectory_data(data, game_id):
+def save_trajectory_data(data, game_id, session_id=None):
     """
-    Save trajectory data to JSON file
+    Save trajectory data to JSON file and optionally save screenshots
     
     Args:
         data: Dictionary containing trajectory data with 'uid' and 'trajectory' keys
         game_id: ID of the game session
+        session_id: Unique session identifier (UUID)
     """
     if not data or 'trajectory' not in data or len(data['trajectory']) == 0:
         return
+    
+    # Generate session ID if not provided
+    if session_id is None:
+        session_id = str(uuid.uuid4())[:8]
     
     # Determine game type based on player types
     game_type = "unknown"
@@ -149,15 +161,115 @@ def save_trajectory_data(data, game_id):
             game_type = "ai-ai"
     
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"game_{game_id}_{game_type}_{timestamp}.json"
+    filename = f"game_{game_id}_{session_id}_{game_type}_{timestamp}.json"
     filepath = os.path.join(DATA_DIR, filename)
+    
+    # Add session_id to data
+    data['session_id'] = session_id
+    data['game_id'] = game_id
+    data['game_type'] = game_type
+    data['timestamp'] = timestamp
     
     try:
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
         app.logger.info(f"Saved trajectory data to {filename}")
+        
+        # Save screenshots if visualization is available
+        try:
+            save_screenshots(data, game_id, session_id, game_type, timestamp)
+        except Exception as e:
+            app.logger.warning(f"Failed to save screenshots: {e}")
+            
     except Exception as e:
         app.logger.error(f"Failed to save trajectory data: {e}")
+
+
+def save_screenshots(data, game_id, session_id, game_type, timestamp):
+    """
+    Save screenshots of game states using StateVisualizer
+    
+    Args:
+        data: Dictionary containing trajectory data
+        game_id: ID of the game session
+        session_id: Unique session identifier
+        game_type: Type of game (human-human, human-ai, etc.)
+        timestamp: Timestamp string
+    """
+    try:
+        pygame.init()
+        visualizer = StateVisualizer()
+        
+        session_dir = os.path.join(SCREENSHOTS_DIR, f"game_{game_id}_{session_id}_{game_type}_{timestamp}")
+        os.makedirs(session_dir, exist_ok=True)
+        
+        trajectory = data.get('trajectory', [])
+        if not trajectory or len(trajectory) == 0:
+            return
+        
+        # Get the grid layout from the first transition
+        first_transition = trajectory[0]
+        layout_str = first_transition.get('layout', None)
+        if layout_str is None:
+            app.logger.warning("No layout found in trajectory data")
+            return
+        
+        # Parse the layout JSON string
+        grid = json.loads(layout_str)
+        
+        # Save screenshots for key frames (every Nth frame to avoid too many images)
+        # Save first, last, and every 10th frame
+        frames_to_save = [0, len(trajectory) - 1]
+        frames_to_save.extend(range(0, len(trajectory), 10))
+        frames_to_save = sorted(set(frames_to_save))
+        
+        for frame_idx in frames_to_save:
+            if frame_idx >= len(trajectory):
+                continue
+                
+            transition = trajectory[frame_idx]
+            state_str = transition.get('state', None)
+            
+            if state_str is None:
+                continue
+            
+            try:
+                # Parse state JSON string
+                state_dict = json.loads(state_str)
+                
+                # Reconstruct OvercookedState from dictionary
+                state = OvercookedState.from_dict(state_dict)
+                
+                # Prepare HUD data
+                hud_data = {
+                    'timestep': frame_idx,
+                    'score': transition.get('score', 0),
+                    'all_orders': state_dict.get('all_orders', []),
+                }
+                
+                # Render and save the state
+                img_filename = f"frame_{frame_idx:04d}.png"
+                img_path = os.path.join(session_dir, img_filename)
+                
+                visualizer.display_rendered_state(
+                    state=state,
+                    hud_data=hud_data,
+                    grid=grid,
+                    img_path=img_path,
+                    ipython_display=False,
+                    window_display=False
+                )
+                
+            except Exception as e:
+                app.logger.warning(f"Failed to render frame {frame_idx}: {e}")
+                continue
+        
+        app.logger.info(f"Saved {len(frames_to_save)} screenshots to {session_dir}")
+        
+    except ImportError as e:
+        app.logger.warning(f"StateVisualizer not available for screenshot generation: {e}")
+    except Exception as e:
+        app.logger.error(f"Error in save_screenshots: {e}")
 
 
 #################################
@@ -588,7 +700,7 @@ def play_game(game, fps=30):
         if status == Game.Status.RESET:
             with game.lock:
                 data = game.get_data()
-            save_trajectory_data(data, game.id)
+            save_trajectory_data(data, game.id, game.session_id)
             socketio.emit('reset_game', { "state" : game.to_json(), "timeout" : game.reset_timeout, "data" : data}, room=game.id)
             socketio.sleep(game.reset_timeout/1000)
         else:
@@ -597,7 +709,7 @@ def play_game(game, fps=30):
     
     with game.lock:
         data = game.get_data()
-        save_trajectory_data(data, game.id)
+        save_trajectory_data(data, game.id, game.session_id)
         socketio.emit('end_game', { "status" : status, "data" : data }, room=game.id)
 
         if status != Game.Status.INACTIVE:

@@ -7,7 +7,7 @@ from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.planning.planners import MotionPlanner, NO_COUNTERS_PARAMS
 from human_aware_rl.rllib.rllib import load_agent
-import random, os, pickle, json
+import random, os, pickle, json, uuid
 import ray
 
 # Relative path to where all static pre-trained agents are stored on server
@@ -76,6 +76,7 @@ class Game(ABC):
         players (list): List of IDs of players currently in the game
         spectators (set): Collection of IDs of players that are not allowed to enqueue actions but are currently watching the game
         id (int):   Unique identifier for this game
+        session_id (str): Unique session identifier (UUID) for this game instance
         pending_actions List[(Queue)]: Buffer of (player_id, action) pairs have submitted that haven't been commited yet
         lock (Lock):    Used to serialize updates to the game state
         is_active(bool): Whether the game is currently being played or not
@@ -84,6 +85,7 @@ class Game(ABC):
         self.spectators = set()
         self.pending_actions = []
         self.id = kwargs.get('id', id(self))
+        self.session_id = str(uuid.uuid4())[:8]  # Generate unique 8-character session ID
         self.lock = Lock()
         self._is_active = False
 

@@ -8,4 +8,4 @@ node_modules/
 **/__pycache__/
 
 .venv/
-webapp/server/data/trajectories/*.json
+webapp/server/data/
