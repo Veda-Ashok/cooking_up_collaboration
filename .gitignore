@@ -8,4 +8,5 @@ node_modules/
 **/__pycache__/
 
 .venv/
+venv/
 webapp/server/data/
