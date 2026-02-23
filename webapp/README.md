@@ -9,6 +9,7 @@ A web application where humans can play Overcooked with trained AI agents.
 * [Usage](#usage)
 * [Dependencies](#dependencies)
 * [Using Pre-trained Agents](#using-pre-trained-agents)
+* [Using BC PyTorch Agents](#using-bc-pytorch-agents)
 * [Updating Overcooked_ai](#updating-overcooked_ai)
 * [Configuration](#configuration)
 * [Legacy Code](#legacy-code)
@@ -52,6 +53,58 @@ The default branch for both repos is currently `master`.
 Overcooked-Demo can dynamically load pre-trained agents provided by the user. In order to use a pre-trained agent, a pickle file should be added to the `agents` directory. The final structure will look like `static/assets/agents/<agent_name>/agent.pickle`. Note, to use the pre-defined rllib loading routine, the agent directory name must start with 'rllib', and contain the appropriate rllib checkpoint, config, and metadata files. For more detailed info and instructions see the [RllibDummy_CrampedRoom](server/static/assets/agents/RllibDummy_CrampedRoom/) example agent.
 
 If a more complex or custom loading routing is necessary, one can subclass the `OvercookedGame` class and override the `get_policy` method, as done in [DummyOvercookedGame](server/game.py#L420). Make sure the subclass is properly imported [here](server/app.py#L5)
+
+## Using BC PyTorch Agents
+
+The server now supports loading BC policies trained in PyTorch (MLP or LSTM) via an agent manifest.
+
+1. Train your BC model (from repo root):
+```bash
+python train_bc.py --model mlp --run-name my_mlp_bc
+```
+or
+```bash
+python train_bc.py --model lstm --run-name my_lstm_bc
+```
+2. Create an agent folder under `webapp/server/static/assets/agents/`, e.g. `BCTorchMLP`.
+3. Copy checkpoint file (`best.pt`) into that folder.
+4. Add `agent_manifest.json` in that folder. Example (MLP):
+```json
+{
+  "type": "bc_torch",
+  "model_type": "mlp",
+  "checkpoint": "best.pt",
+  "player_idx": 1,
+  "supported_layouts": ["cramped_room", "coordination_ring"],
+  "input_dim": 96,
+  "num_actions": 6,
+  "mlp_hidden": [256, 128],
+  "dropout": 0.1,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}
+```
+Example (LSTM):
+```json
+{
+  "type": "bc_torch",
+  "model_type": "lstm",
+  "checkpoint": "best.pt",
+  "player_idx": 1,
+  "supported_layouts": ["cramped_room", "coordination_ring"],
+  "input_dim": 96,
+  "num_actions": 6,
+  "seq_len": 20,
+  "hidden_dim": 128,
+  "num_layers": 1,
+  "dropout": 0.1,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}
+```
+5. Restart the server (`./up.sh` or `./up.sh production`). The folder name (e.g. `BCTorchMLP`) will appear in the UI dropdown automatically.
+
+Notes:
+- If a selected layout is not in `supported_layouts`, BC agent safely returns `STAY`.
+- BC agents use the same runtime interface as existing agents (`action(state)` and `reset()`), so they coexist with RLlib and pickle agents.
 
 ## Use the human vs. human game mode.
 

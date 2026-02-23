@@ -10,3 +10,9 @@ node_modules/
 .venv/
 venv/
 webapp/server/data/
+
+data/trajectories/
+data/*csv
+
+trained_models/
+.cache/
