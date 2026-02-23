@@ -10,4 +10,13 @@ node_modules/
 .venv/
 venv/
 webapp/server/data/
+<<<<<<< HEAD
 *.sln
+=======
+
+data/trajectories/
+data/*csv
+
+trained_models/
+.cache/
+>>>>>>> bd20971 (Inital Behavioural Cloning Update)

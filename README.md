@@ -93,3 +93,114 @@ Example screenshot directories:
 - Screenshots are saved every 10 frames
 - This means one screenshot is captured every ~0.33 seconds of gameplay
 - A 30-second game will generate approximately 90 screenshots
+
+
+## Behaviour Cloning
+
+You can download the original data collected in the overcooked AI repo [here](https://drive.google.com/drive/folders/1aGV8eqWeOG5BMFdUcVoP2NHU_GFPqi57) and then palce it under `data/` in the root folder of this repo.
+
+Right now BC training is setup from csv first (`data/2019_hh_trials.csv`) and supports both models:
+- LSTM (default)
+- MLP
+
+To train:
+```bash
+python train_bc.py --model lstm --run-name bc_lstm_v1
+```
+or
+```bash
+python train_bc.py --model mlp --run-name bc_mlp_v1
+```
+
+### What data is actually used as input?
+
+For each timestep row in csv:
+- `state` is parsed into OvercookedState
+- then we run Overcooked featurizer (`mdp.featurize_state`) for selected player
+- this gives feature vector (typically 96 dim)
+
+Label/target is from `joint_action` but only one player's action is predicted (single-agent BC), default `player_0`.
+
+Action space is 6 classes:
+- `UP`, `DOWN`, `LEFT`, `RIGHT`, `STAY`, `INTERACT`
+
+### Are we training all layouts in csv?
+
+Yes. Current pipeline uses all layouts available in the csv and then does split by `trial_id` (not by layout holdout).  
+So if your csv has multiple layouts (like `cramped_room`, `coordination_ring`, `asymmetric_advantages`, `random0`, `random3`), all of them are used.
+
+### Training outputs
+
+Each run saves files like:
+- `best.pt`
+- `last.pt`
+- `metrics.json`
+- `config.json`
+- `split_summary.json`
+- `preprocessing_report.json`
+
+Default output dir right now is:
+```bash
+trained_models/bc/
+```
+
+## Running BC Models in the Webapp (PyTorch)
+
+Now webapp can load BC PyTorch models directly (no tensorflow conversion needed).
+
+It works by adding an agent folder under:
+```bash
+webapp/server/static/assets/agents/<YourAgentName>/
+```
+
+Put these files inside:
+- `best.pt`
+- `agent_manifest.json`
+
+Then restart webapp:
+```bash
+cd webapp
+./up.sh
+```
+
+Your folder name shows up in agent dropdown automatically.
+
+### Example manifest (MLP)
+
+```json
+{
+  "type": "bc_torch",
+  "model_type": "mlp",
+  "checkpoint": "best.pt",
+  "player_idx": 1,
+  "supported_layouts": ["cramped_room", "coordination_ring", "asymmetric_advantages", "random0", "random3"],
+  "input_dim": 96,
+  "num_actions": 6,
+  "mlp_hidden": [256, 128],
+  "dropout": 0.1,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}
+```
+
+### Example manifest (LSTM)
+
+```json
+{
+  "type": "bc_torch",
+  "model_type": "lstm",
+  "checkpoint": "best.pt",
+  "player_idx": 1,
+  "supported_layouts": ["cramped_room", "coordination_ring", "asymmetric_advantages", "random0", "random3"],
+  "input_dim": 96,
+  "num_actions": 6,
+  "seq_len": 20,
+  "hidden_dim": 128,
+  "num_layers": 1,
+  "dropout": 0.1,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}
+```
+
+Note:
+- If selected layout is not in `supported_layouts`, BC agent safely returns `STAY`.
+- Since server requirements now include `torch`, do a docker rebuild if needed.
