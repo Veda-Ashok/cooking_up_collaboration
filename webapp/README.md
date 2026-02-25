@@ -86,6 +86,8 @@ Default training uses both player perspectives in one shared policy (`--player-m
   "type": "bc_torch",
   "model_type": "mlp",
   "checkpoint": "best.pt",
+  "sampling_mode": "sample",
+  "sampling_temperature": 1.0,
   "supported_layouts": ["cramped_room", "coordination_ring"],
   "input_dim": 96,
   "num_actions": 6,
@@ -100,6 +102,8 @@ Example (LSTM):
   "type": "bc_torch",
   "model_type": "lstm",
   "checkpoint": "best.pt",
+  "sampling_mode": "sample",
+  "sampling_temperature": 1.0,
   "supported_layouts": ["cramped_room", "coordination_ring"],
   "input_dim": 96,
   "num_actions": 6,
@@ -115,6 +119,8 @@ Example (LSTM):
 Notes:
 - If a selected layout is not in `supported_layouts`, BC agent safely returns `STAY`.
 - `player_idx` in manifest is optional. If omitted, runtime slot index is used.
+- Default inference matches Overcooked-style sampling (`sampling_mode="sample"`), which helps prevent BC-vs-BC spawn deadlocks.
+- For deterministic behavior set `sampling_mode` to `"argmax"` (optionally with `deadlock_break_after` > 0).
 - BC agents use the same runtime interface as existing agents (`action(state)` and `reset()`), so they coexist with RLlib and pickle agents.
 
 ## Use the human vs. human game mode.

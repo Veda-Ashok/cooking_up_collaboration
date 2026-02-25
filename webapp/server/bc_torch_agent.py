@@ -27,10 +27,10 @@ class TorchMLPPolicy(nn.Module):
             layers.append(nn.Dropout(dropout))
             prev_dim = hidden_dim
         layers.append(nn.Linear(prev_dim, num_actions))
-        self.net = nn.Sequential(*layers)
+        self.network = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        return self.network(x)
 
 
 class TorchLSTMPolicy(nn.Module):
@@ -83,7 +83,18 @@ class TorchBCAgent:
         self.seq_len = int(self.manifest.get("seq_len", 20))
         self.supported_layouts = set(self.manifest.get("supported_layouts", []))
         self._warned_layouts = set()
-        self.deadlock_break_after = int(self.manifest.get("deadlock_break_after", 8))
+        self.sampling_mode = str(self.manifest.get("sampling_mode", "sample")).lower()
+        if self.sampling_mode not in {"sample", "argmax"}:
+            raise ValueError(
+                f"Unsupported sampling_mode={self.sampling_mode} in manifest for {self.agent_dir}. "
+                "Use one of: sample, argmax."
+            )
+        self.sampling_temperature = float(self.manifest.get("sampling_temperature", 1.0))
+        if self.sampling_temperature <= 0:
+            raise ValueError(
+                f"sampling_temperature must be > 0 for {self.agent_dir}, got {self.sampling_temperature}"
+            )
+        self.deadlock_break_after = int(self.manifest.get("deadlock_break_after", 0))
         if self.deadlock_break_after < 0:
             self.deadlock_break_after = 0
 
@@ -107,7 +118,7 @@ class TorchBCAgent:
             state_dict = checkpoint["model_state_dict"]
         else:
             state_dict = checkpoint
-        self.model.load_state_dict(state_dict)
+        self._load_model_state_dict(state_dict)
         self.model.to(self.device)
         self.model.eval()
 
@@ -145,6 +156,33 @@ class TorchBCAgent:
                 dropout=float(manifest.get("dropout", 0.1)),
             )
         raise ValueError(f"Unsupported model_type in manifest: {self.model_type}")
+
+    def _load_model_state_dict(self, state_dict: dict[str, Any]) -> None:
+        try:
+            self.model.load_state_dict(state_dict)
+            return
+        except RuntimeError as first_error:
+            if self.model_type != "mlp":
+                raise
+
+            # Compatibility for older runtime checkpoints that used "net.*"
+            # and newer training checkpoints that use "network.*".
+            remapped: dict[str, Any] = {}
+            changed = False
+            for key, value in state_dict.items():
+                if key.startswith("net."):
+                    remapped[f"network.{key[4:]}"] = value
+                    changed = True
+                else:
+                    remapped[key] = value
+
+            if not changed:
+                raise
+
+            try:
+                self.model.load_state_dict(remapped)
+            except RuntimeError:
+                raise first_error
 
     def _set_planner_cache_dir(self, cache_dir: str) -> None:
         os.makedirs(cache_dir, exist_ok=True)
@@ -198,8 +236,10 @@ class TorchBCAgent:
         self._last_feature = None
         self._stuck_count = 0
 
-    # breaks deadlock by choosing a random action if the agent is stuck, this happens often when both the players are BC cloned agents
+    # Optional fallback for deterministic argmax inference.
     def _maybe_break_deadlock(self, action_idx: int, logits: torch.Tensor, feature: np.ndarray) -> int:
+        if self.sampling_mode != "argmax":
+            return action_idx
         if self.deadlock_break_after <= 0:
             return action_idx
         if action_idx != 4:
@@ -217,6 +257,21 @@ class TorchBCAgent:
         best_non_stay_local = int(torch.argmax(non_stay_logits, dim=1).item())
         self._stuck_count = 0
         return int(non_stay_indices[best_non_stay_local].item())
+
+    def _select_action_idx(self, logits: torch.Tensor) -> int:
+        if self.sampling_mode == "argmax":
+            return int(torch.argmax(logits, dim=1).item())
+
+        scaled_logits = logits / self.sampling_temperature
+        probs = torch.softmax(scaled_logits, dim=1)
+        if not torch.isfinite(probs).all():
+            LOGGER.warning(
+                "Non-finite action probabilities in BC torch agent %s. Falling back to argmax.",
+                os.path.basename(self.agent_dir),
+            )
+            return int(torch.argmax(logits, dim=1).item())
+        action_idx = int(torch.distributions.Categorical(probs=probs).sample().item())
+        return action_idx
 
     def _featurize_state(self, state) -> np.ndarray | None:
         if self._mdp is None or self._mlam is None:
@@ -246,7 +301,7 @@ class TorchBCAgent:
             x_seq = np.stack(list(self._history), axis=0).astype(np.float32)
             x = torch.from_numpy(x_seq).unsqueeze(0).to(self.device)
             logits = self.model(x)
-        pred_idx = int(torch.argmax(logits, dim=1).item())
+        pred_idx = self._select_action_idx(logits)
         pred_idx = self._maybe_break_deadlock(pred_idx, logits, feature)
         self._last_feature = feature.copy()
         return pred_idx
