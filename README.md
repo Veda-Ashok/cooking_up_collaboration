@@ -192,6 +192,8 @@ Your folder name shows up in agent dropdown automatically.
   "type": "bc_torch",
   "model_type": "mlp",
   "checkpoint": "best.pt",
+  "sampling_mode": "sample",
+  "sampling_temperature": 1.0,
   "supported_layouts": ["cramped_room", "coordination_ring", "asymmetric_advantages", "random0", "random3"],
   "input_dim": 96,
   "num_actions": 6,
@@ -208,6 +210,8 @@ Your folder name shows up in agent dropdown automatically.
   "type": "bc_torch",
   "model_type": "lstm",
   "checkpoint": "best.pt",
+  "sampling_mode": "sample",
+  "sampling_temperature": 1.0,
   "supported_layouts": ["cramped_room", "coordination_ring", "asymmetric_advantages", "random0", "random3"],
   "input_dim": 96,
   "num_actions": 6,
@@ -222,4 +226,6 @@ Your folder name shows up in agent dropdown automatically.
 Note:
 - If selected layout is not in `supported_layouts`, BC agent safely returns `STAY`.
 - `player_idx` in manifest is optional. If omitted, the agent uses its runtime slot (player 0 or player 1).
+- Default inference now matches Overcooked style (`sampling_mode="sample"`), which helps avoid BC-vs-BC symmetry lock at spawn.
+- For deterministic behavior, set `sampling_mode` to `"argmax"` (and optionally `deadlock_break_after` > 0).
 - Since server requirements now include `torch`, do a docker rebuild if needed.
