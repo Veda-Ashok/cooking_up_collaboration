@@ -1,18 +1,48 @@
 #!/bin/bash
-if [[ $1 = prod* ]];
-then
+set -euo pipefail
+
+MODE="development"
+BUILD_MODE="reuse"
+DETACH="false"
+
+for arg in "$@"; do
+    case "$arg" in
+        prod|production)
+            MODE="production"
+            ;;
+        --build)
+            BUILD_MODE="build"
+            ;;
+        --rebuild|--no-cache)
+            BUILD_MODE="rebuild"
+            ;;
+        --detach)
+            DETACH="true"
+            ;;
+    esac
+done
+
+if [[ "$MODE" == "production" ]]; then
     echo "production"
     export BUILD_ENV=production
-
-    # Completely re-build all images from scatch without using build cache
-    docker compose build --no-cache
-    docker compose up --force-recreate -d
 else
     echo "development"
     export BUILD_ENV=development
-    # Uncomment the following line if there has been an updated to overcooked-ai code
-    # docker-compose build --no-cache
+fi
 
-    # Force re-build of all images but allow use of build cache if possible
-    docker compose up --build
+UP_FLAGS=()
+if [[ "$DETACH" == "true" ]]; then
+    UP_FLAGS+=("-d")
+fi
+
+if [[ "$BUILD_MODE" == "rebuild" ]]; then
+    echo "build mode: no-cache rebuild"
+    docker compose build --no-cache
+    docker compose up --force-recreate "${UP_FLAGS[@]}"
+elif [[ "$BUILD_MODE" == "build" ]]; then
+    echo "build mode: incremental build"
+    docker compose up --build "${UP_FLAGS[@]}"
+else
+    echo "build mode: reuse existing image"
+    docker compose up "${UP_FLAGS[@]}"
 fi

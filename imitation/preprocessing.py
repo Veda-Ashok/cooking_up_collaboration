@@ -21,7 +21,7 @@ from imitation.constants import ACTION_TO_ID, normalize_action_token
 class StepRecord:
     timestep: int
     state_dict: dict[str, Any]
-    action_id: int
+    action_ids: tuple[int, int]
 
 
 @dataclass
@@ -38,6 +38,7 @@ class FeaturizedTrial:
     layout_name: str
     x: np.ndarray
     y: np.ndarray
+    slot_ids: np.ndarray
 
 
 def load_csv_rows(csv_path: str) -> list[dict[str, str]]:
@@ -54,16 +55,12 @@ def parse_joint_action(raw_joint_action: str) -> tuple[str, str]:
     return action_0, action_1
 
 
-def extract_player_action(raw_joint_action: str, player_idx: int) -> str:
-    action_0, action_1 = parse_joint_action(raw_joint_action)
-    if player_idx == 0:
-        return action_0
-    if player_idx == 1:
-        return action_1
-    raise ValueError(f"player_idx must be 0 or 1, got {player_idx}")
+def _parse_joint_action_ids(raw_joint_action: str) -> tuple[int, int]:
+    action_0_name, action_1_name = parse_joint_action(raw_joint_action)
+    return ACTION_TO_ID[action_0_name], ACTION_TO_ID[action_1_name]
 
 
-def build_trial_records(rows: list[dict[str, str]], player_idx: int) -> tuple[list[TrialRecord], dict[str, int]]:
+def build_trial_records(rows: list[dict[str, str]]) -> tuple[list[TrialRecord], dict[str, int]]:
     grouped_rows: dict[str, list[dict[str, str]]] = defaultdict(list)
     report = {
         "raw_rows": len(rows),
@@ -122,8 +119,7 @@ def build_trial_records(rows: list[dict[str, str]], player_idx: int) -> tuple[li
                     report["bad_layout_rows"] += 1
 
             try:
-                action_name = extract_player_action(row["joint_action"], player_idx=player_idx)
-                action_id = ACTION_TO_ID[action_name]
+                action_ids = _parse_joint_action_ids(row["joint_action"])
             except (KeyError, ValueError, SyntaxError):
                 report["bad_action_rows"] += 1
                 continue
@@ -140,7 +136,7 @@ def build_trial_records(rows: list[dict[str, str]], player_idx: int) -> tuple[li
             except (TypeError, ValueError):
                 timestep = len(steps)
 
-            steps.append(StepRecord(timestep=timestep, state_dict=state_dict, action_id=action_id))
+            steps.append(StepRecord(timestep=timestep, state_dict=state_dict, action_ids=action_ids))
 
         if not steps or layout_name is None:
             report["empty_trials_after_cleaning"] += 1
@@ -208,9 +204,20 @@ def _layout_signature(layout_name: str, layout_grid: list[str] | None) -> str:
 
 def featurize_trials_with_overcooked(
     trials: list[TrialRecord],
-    player_idx: int,
+    player_mode: str,
+    player_idx: int | None,
     planner_cache_dir: str,
 ) -> tuple[list[FeaturizedTrial], dict[str, int]]:
+    if player_mode not in {"both", "single"}:
+        raise ValueError(f"Unsupported player_mode={player_mode}")
+    if player_mode == "single" and player_idx not in (0, 1):
+        raise ValueError(f"player_idx must be 0 or 1 when player_mode=single, got {player_idx}")
+
+    if player_mode == "both":
+        sample_player_indices = (0, 1)
+    else:
+        sample_player_indices = (int(player_idx),)
+
     planner_cache_dir = os.path.abspath(planner_cache_dir)
     _configure_planner_cache(planner_cache_dir)
 
@@ -270,26 +277,35 @@ def featurize_trials_with_overcooked(
         mdp, mlam = layout_to_artifacts[signature]
         x_rows = []
         y_rows = []
+        slot_rows = []
 
         for step in trial.steps:
             try:
                 state = OvercookedState.from_dict(step.state_dict)
                 feat_by_player = mdp.featurize_state(state, mlam)
-                feat = np.asarray(feat_by_player[player_idx], dtype=np.float32)
             except Exception:
                 report["featurization_errors"] += 1
                 continue
 
-            if expected_feature_dim is None:
-                expected_feature_dim = int(feat.shape[0])
-            elif int(feat.shape[0]) != expected_feature_dim:
-                raise RuntimeError(
-                    f"Inconsistent feature size for trial {trial.trial_id}: "
-                    f"expected {expected_feature_dim}, found {feat.shape[0]}"
-                )
+            for sample_player_idx in sample_player_indices:
+                try:
+                    feat = np.asarray(feat_by_player[sample_player_idx], dtype=np.float32)
+                    action_id = int(step.action_ids[sample_player_idx])
+                except Exception:
+                    report["featurization_errors"] += 1
+                    continue
 
-            x_rows.append(feat)
-            y_rows.append(step.action_id)
+                if expected_feature_dim is None:
+                    expected_feature_dim = int(feat.shape[0])
+                elif int(feat.shape[0]) != expected_feature_dim:
+                    raise RuntimeError(
+                        f"Inconsistent feature size for trial {trial.trial_id}: "
+                        f"expected {expected_feature_dim}, found {feat.shape[0]}"
+                    )
+
+                x_rows.append(feat)
+                y_rows.append(action_id)
+                slot_rows.append(sample_player_idx)
 
         if not x_rows:
             report["empty_trials_after_featurization"] += 1
@@ -297,12 +313,14 @@ def featurize_trials_with_overcooked(
 
         x = np.stack(x_rows, axis=0).astype(np.float32)
         y = np.asarray(y_rows, dtype=np.int64)
+        slot_ids = np.asarray(slot_rows, dtype=np.int64)
         featurized_trials.append(
             FeaturizedTrial(
                 trial_id=trial.trial_id,
                 layout_name=trial.layout_name,
                 x=x,
                 y=y,
+                slot_ids=slot_ids,
             )
         )
 

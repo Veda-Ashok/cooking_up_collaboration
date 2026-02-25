@@ -30,6 +30,17 @@ In order to build and run the development server, which includes a deterministic
 sed -i 's/"credsStore":/"#credsStore":/g' ~/.docker/config.json # if docker is troubling with creds
 ./up.sh
 ```
+By default, `./up.sh` reuses the existing Docker image (no forced rebuild).  
+By default it runs in foreground (you see live logs).  
+Optional flags:
+```bash
+./up.sh --build           # build with cache, then run
+./up.sh --rebuild         # no-cache rebuild, force recreate
+./up.sh --detach          # run in background
+./up.sh production --build
+./up.sh production --rebuild
+./up.sh production --detach
+```
 
 After running one of the above commands, navigate to http://localhost
 
@@ -66,6 +77,7 @@ or
 ```bash
 python train_bc.py --model lstm --run-name my_lstm_bc
 ```
+Default training uses both player perspectives in one shared policy (`--player-mode both`).
 2. Create an agent folder under `webapp/server/static/assets/agents/`, e.g. `BCTorchMLP`.
 3. Copy checkpoint file (`best.pt`) into that folder.
 4. Add `agent_manifest.json` in that folder. Example (MLP):
@@ -74,7 +86,6 @@ python train_bc.py --model lstm --run-name my_lstm_bc
   "type": "bc_torch",
   "model_type": "mlp",
   "checkpoint": "best.pt",
-  "player_idx": 1,
   "supported_layouts": ["cramped_room", "coordination_ring"],
   "input_dim": 96,
   "num_actions": 6,
@@ -89,7 +100,6 @@ Example (LSTM):
   "type": "bc_torch",
   "model_type": "lstm",
   "checkpoint": "best.pt",
-  "player_idx": 1,
   "supported_layouts": ["cramped_room", "coordination_ring"],
   "input_dim": 96,
   "num_actions": 6,
@@ -104,6 +114,7 @@ Example (LSTM):
 
 Notes:
 - If a selected layout is not in `supported_layouts`, BC agent safely returns `STAY`.
+- `player_idx` in manifest is optional. If omitted, runtime slot index is used.
 - BC agents use the same runtime interface as existing agents (`action(state)` and `reset()`), so they coexist with RLlib and pickle agents.
 
 ## Use the human vs. human game mode.

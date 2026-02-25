@@ -76,12 +76,16 @@ class TorchBCAgent:
         self.agent_index = int(agent_index)
         self.manifest = self._load_manifest()
         self.model_type = self.manifest.get("model_type", "mlp").lower()
-        self.player_idx = int(self.manifest.get("player_idx", self.agent_index))
+        manifest_player_idx = self.manifest.get("player_idx", None)
+        self.player_idx = self.agent_index if manifest_player_idx is None else int(manifest_player_idx)
         self.num_actions = int(self.manifest.get("num_actions", 6))
         self.input_dim = int(self.manifest["input_dim"])
         self.seq_len = int(self.manifest.get("seq_len", 20))
         self.supported_layouts = set(self.manifest.get("supported_layouts", []))
         self._warned_layouts = set()
+        self.deadlock_break_after = int(self.manifest.get("deadlock_break_after", 8))
+        if self.deadlock_break_after < 0:
+            self.deadlock_break_after = 0
 
         self.planner_cache_dir = os.path.abspath(
             os.path.join(self.agent_dir, self.manifest.get("planner_cache_dir", ".cache/overcooked_planners"))
@@ -111,6 +115,8 @@ class TorchBCAgent:
         self._mlam = None
         self._layout_name = None
         self._history = deque(maxlen=self.seq_len)
+        self._last_feature: np.ndarray | None = None
+        self._stuck_count = 0
 
     def _load_manifest(self) -> dict[str, Any]:
         manifest_path = os.path.join(self.agent_dir, "agent_manifest.json")
@@ -189,6 +195,28 @@ class TorchBCAgent:
 
     def reset(self) -> None:
         self._history.clear()
+        self._last_feature = None
+        self._stuck_count = 0
+
+    # breaks deadlock by choosing a random action if the agent is stuck, this happens often when both the players are BC cloned agents
+    def _maybe_break_deadlock(self, action_idx: int, logits: torch.Tensor, feature: np.ndarray) -> int:
+        if self.deadlock_break_after <= 0:
+            return action_idx
+        if action_idx != 4:
+            self._stuck_count = 0
+            return action_idx
+        if self._last_feature is not None and np.array_equal(feature, self._last_feature):
+            self._stuck_count += 1
+        else:
+            self._stuck_count = 0
+        if self._stuck_count < self.deadlock_break_after:
+            return action_idx
+
+        non_stay_indices = torch.tensor([0, 1, 2, 3, 5], device=logits.device)
+        non_stay_logits = logits.index_select(dim=1, index=non_stay_indices)
+        best_non_stay_local = int(torch.argmax(non_stay_logits, dim=1).item())
+        self._stuck_count = 0
+        return int(non_stay_indices[best_non_stay_local].item())
 
     def _featurize_state(self, state) -> np.ndarray | None:
         if self._mdp is None or self._mlam is None:
@@ -219,6 +247,8 @@ class TorchBCAgent:
             x = torch.from_numpy(x_seq).unsqueeze(0).to(self.device)
             logits = self.model(x)
         pred_idx = int(torch.argmax(logits, dim=1).item())
+        pred_idx = self._maybe_break_deadlock(pred_idx, logits, feature)
+        self._last_feature = feature.copy()
         return pred_idx
 
     def action(self, state):
