@@ -475,7 +475,10 @@ class OvercookedGame(Game):
         policy = self.npc_policies[policy_id]
         while self._is_active:
             state = queue.get()
-            npc_action, _ = policy.action(state)
+            try:
+                npc_action, _ = policy.action(state)
+            except Exception:
+                npc_action = Action.STAY
             super(OvercookedGame, self).enqueue_action(policy_id, npc_action)
 
 
@@ -566,7 +569,10 @@ class OvercookedGame(Game):
         self.score = 0
         self.threads = []
         for npc_policy in self.npc_policies:
-            self.npc_policies[npc_policy].reset()
+            policy = self.npc_policies[npc_policy]
+            if hasattr(policy, "set_mdp_context"):
+                policy.set_mdp_context(self.mdp, self.curr_layout)
+            policy.reset()
             self.npc_state_queues[npc_policy].put(self.state)
             t = Thread(target=self.npc_policy_consumer, args=(npc_policy,))
             self.threads.append(t)
@@ -601,6 +607,18 @@ class OvercookedGame(Game):
         return obj_dict
 
     def get_policy(self, npc_id, idx=0):
+        agent_dir = os.path.join(AGENT_DIR, npc_id)
+        manifest_path = os.path.join(agent_dir, "agent_manifest.json")
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                if manifest.get("type") == "bc_torch":
+                    from bc_torch_agent import TorchBCAgent
+                    return TorchBCAgent(agent_dir=agent_dir, agent_index=idx, device="cpu")
+            except Exception as e:
+                raise IOError("Error loading BC torch agent\n{}".format(e.__repr__()))
+
         if npc_id.lower().startswith("rllib"):
             try:
                 # Loading rllib agents requires additional helpers
