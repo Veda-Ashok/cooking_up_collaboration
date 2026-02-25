@@ -14,6 +14,16 @@ In order to build and run the development webapp, which includes a deterministic
 cd webapp
 ./up.sh
 ```
+By default this now reuses existing Docker images.  
+If you need to rebuild:
+```bash
+./up.sh --build      # incremental rebuild with cache
+./up.sh --rebuild    # full no-cache rebuild
+```
+If you prefer the old silent/background behavior:
+```bash
+./up.sh --detach
+```
 
 If needed use the below, if Docker's build cache is corrupted
 ```bash
@@ -112,14 +122,24 @@ or
 python train_bc.py --model mlp --run-name bc_mlp_v1
 ```
 
+Default training uses both player perspectives in one shared policy (`--player-mode both`).
+
+To train single-player BC for ablations:
+```bash
+python train_bc.py --model lstm --player-mode single --player-idx 0 --run-name bc_lstm_p0
+```
+
 ### What data is actually used as input?
 
 For each timestep row in csv:
 - `state` is parsed into OvercookedState
-- then we run Overcooked featurizer (`mdp.featurize_state`) for selected player
-- this gives feature vector (typically 96 dim)
+- then we run Overcooked featurizer (`mdp.featurize_state`)
+- in default mode (`--player-mode both`), both player 0 and player 1 views are added as supervised samples
+- this gives feature vectors (typically 96 dim)
 
-Label/target is from `joint_action` but only one player's action is predicted (single-agent BC), default `player_0`.
+Label/target is from `joint_action`:
+- default: both players are used (shared policy training)
+- optional ablation: only one selected player with `--player-mode single --player-idx {0|1}`
 
 Action space is 6 classes:
 - `UP`, `DOWN`, `LEFT`, `RIGHT`, `STAY`, `INTERACT`
@@ -172,7 +192,6 @@ Your folder name shows up in agent dropdown automatically.
   "type": "bc_torch",
   "model_type": "mlp",
   "checkpoint": "best.pt",
-  "player_idx": 1,
   "supported_layouts": ["cramped_room", "coordination_ring", "asymmetric_advantages", "random0", "random3"],
   "input_dim": 96,
   "num_actions": 6,
@@ -189,7 +208,6 @@ Your folder name shows up in agent dropdown automatically.
   "type": "bc_torch",
   "model_type": "lstm",
   "checkpoint": "best.pt",
-  "player_idx": 1,
   "supported_layouts": ["cramped_room", "coordination_ring", "asymmetric_advantages", "random0", "random3"],
   "input_dim": 96,
   "num_actions": 6,
@@ -203,4 +221,5 @@ Your folder name shows up in agent dropdown automatically.
 
 Note:
 - If selected layout is not in `supported_layouts`, BC agent safely returns `STAY`.
+- `player_idx` in manifest is optional. If omitted, the agent uses its runtime slot (player 0 or player 1).
 - Since server requirements now include `torch`, do a docker rebuild if needed.

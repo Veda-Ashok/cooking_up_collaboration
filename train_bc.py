@@ -25,7 +25,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--data-csv", type=str, default="data/2019_hh_trials.csv")
     parser.add_argument("--model", type=str, choices=["lstm", "mlp"], default="lstm")
-    parser.add_argument("--player-idx", type=int, default=0, choices=[0, 1])
+    parser.add_argument("--player-mode", type=str, choices=["both", "single"], default="both")
+    parser.add_argument("--player-idx", type=int, default=None, choices=[0, 1])
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
@@ -62,12 +63,18 @@ def main() -> None:
     if args.seq_len <= 0:
         raise ValueError("seq_len must be > 0")
 
+    if args.player_mode == "single" and args.player_idx is None:
+        raise ValueError("--player-idx is required when --player-mode=single")
+    if args.player_mode == "both" and args.player_idx is not None:
+        raise ValueError("--player-idx must not be set when --player-mode=both")
+
     if not os.path.exists(args.data_csv):
         raise FileNotFoundError(f"CSV not found: {args.data_csv}")
 
     config = BCConfig(
         data_csv=args.data_csv,
         model=args.model,
+        player_mode=args.player_mode,
         player_idx=args.player_idx,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,

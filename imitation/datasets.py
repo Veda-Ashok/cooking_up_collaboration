@@ -11,9 +11,11 @@ class MLPTimestepDataset(Dataset):
             raise ValueError("Cannot build MLPTimestepDataset with no trials")
         x = np.concatenate([trial.x for trial in trials], axis=0).astype(np.float32)
         y = np.concatenate([trial.y for trial in trials], axis=0).astype(np.int64)
+        slot_ids = np.concatenate([trial.slot_ids for trial in trials], axis=0).astype(np.int64)
         self.x = torch.from_numpy(x)
         self.y = torch.from_numpy(y)
         self.targets_np = y
+        self.slot_ids_np = slot_ids
 
     def __len__(self) -> int:
         return self.x.shape[0]
@@ -31,6 +33,7 @@ class LSTMWindowDataset(Dataset):
         self.seq_len = seq_len
         self.index: list[tuple[int, int]] = []
         targets = []
+        slot_ids = []
 
         for trial_idx, trial in enumerate(trials):
             steps = trial.x.shape[0]
@@ -39,8 +42,10 @@ class LSTMWindowDataset(Dataset):
             for start in range(0, steps - seq_len + 1):
                 self.index.append((trial_idx, start))
                 targets.append(int(trial.y[start + seq_len - 1]))
+                slot_ids.append(int(trial.slot_ids[start + seq_len - 1]))
 
         self.targets_np = np.asarray(targets, dtype=np.int64)
+        self.slot_ids_np = np.asarray(slot_ids, dtype=np.int64)
 
     def __len__(self) -> int:
         return len(self.index)
@@ -104,4 +109,3 @@ def build_dataloaders(
     }
     datasets = {"train": train_dataset, "val": val_dataset, "test": test_dataset}
     return dataloaders, datasets
-

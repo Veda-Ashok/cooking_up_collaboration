@@ -1,14 +1,13 @@
 {
-    "type": "bc_torch",
-    "model_type": "lstm",
-    "checkpoint": "best.pt",
-    "player_idx": 1,
-    "supported_layouts": ["cramped_room"],
-    "input_dim": 96,
-    "num_actions": 6,
-    "seq_len": 20,
-    "hidden_dim": 128,
-    "num_layers": 1,
-    "dropout": 0.1,
-    "planner_cache_dir": ".cache/overcooked_planners"
-  }
+  "type": "bc_torch",
+  "model_type": "lstm",
+  "checkpoint": "best.pt",
+  "supported_layouts": ["cramped_room", "coordination_ring", "asymmetric_advantages", "random0", "random3"],
+  "input_dim": 96,
+  "num_actions": 6,
+  "seq_len": 20,
+  "hidden_dim": 128,
+  "num_layers": 1,
+  "dropout": 0.1,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}

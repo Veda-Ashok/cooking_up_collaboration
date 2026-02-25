@@ -23,7 +23,8 @@ from imitation.preprocessing import (
 class BCConfig:
     data_csv: str
     model: str
-    player_idx: int
+    player_mode: str
+    player_idx: int | None
     train_ratio: float
     val_ratio: float
     seed: int
@@ -135,7 +136,7 @@ def evaluate(
     dataloader,
     criterion: nn.Module,
     device: torch.device,
-) -> tuple[float, dict]:
+) -> tuple[float, dict, np.ndarray, np.ndarray]:
     model.eval()
     running_loss = 0.0
     sample_count = 0
@@ -159,20 +160,49 @@ def evaluate(
     y_pred_np = np.concatenate(y_pred, axis=0) if y_pred else np.array([], dtype=np.int64)
     metrics = compute_classification_metrics(y_true_np, y_pred_np, num_classes=len(ACTION_TO_ID))
     mean_loss = running_loss / max(sample_count, 1)
-    return mean_loss, metrics
+    return mean_loss, metrics, y_true_np, y_pred_np
+
+
+def _compute_metrics_by_slot(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    slot_ids: np.ndarray,
+    num_actions: int,
+) -> dict[str, dict]:
+    if y_true.shape[0] != y_pred.shape[0] or y_true.shape[0] != slot_ids.shape[0]:
+        raise RuntimeError(
+            "Cannot compute slot metrics: length mismatch "
+            f"(y_true={y_true.shape[0]}, y_pred={y_pred.shape[0]}, slot_ids={slot_ids.shape[0]})"
+        )
+
+    out: dict[str, dict] = {}
+    for slot in (0, 1):
+        mask = slot_ids == slot
+        out[f"player_{slot}"] = compute_classification_metrics(
+            y_true[mask],
+            y_pred[mask],
+            num_classes=num_actions,
+        )
+    return out
 
 
 def run_training(config: BCConfig) -> Path:
+    if config.player_mode not in {"both", "single"}:
+        raise ValueError(f"Unsupported player_mode={config.player_mode}")
+    if config.player_mode == "single" and config.player_idx not in (0, 1):
+        raise ValueError(f"player_idx must be set to 0 or 1 for player_mode=single, got {config.player_idx}")
+
     _set_seed(config.seed)
     run_dir = create_run_dir(config.outdir, config.model, config.run_name)
 
     rows = load_csv_rows(config.data_csv)
-    cleaned_trials, clean_report = build_trial_records(rows, player_idx=config.player_idx)
+    cleaned_trials, clean_report = build_trial_records(rows)
     if not cleaned_trials:
         raise RuntimeError("No valid trials found after CSV cleaning")
 
     featurized_trials, feat_report = featurize_trials_with_overcooked(
         cleaned_trials,
+        player_mode=config.player_mode,
         player_idx=config.player_idx,
         planner_cache_dir=config.planner_cache_dir,
     )
@@ -231,7 +261,7 @@ def run_training(config: BCConfig) -> Path:
             device=device,
             grad_clip=grad_clip,
         )
-        val_loss, val_metrics = evaluate(
+        val_loss, val_metrics, _, _ = evaluate(
             model=model,
             dataloader=dataloaders["val"],
             criterion=criterion,
@@ -288,11 +318,29 @@ def run_training(config: BCConfig) -> Path:
     best_checkpoint = torch.load(best_path, map_location=device)
     model.load_state_dict(best_checkpoint["model_state_dict"])
 
-    test_loss, test_metrics = evaluate(
+    best_val_loss, best_val_metrics, best_val_y_true, best_val_y_pred = evaluate(
+        model=model,
+        dataloader=dataloaders["val"],
+        criterion=criterion,
+        device=device,
+    )
+    test_loss, test_metrics, test_y_true, test_y_pred = evaluate(
         model=model,
         dataloader=dataloaders["test"],
         criterion=criterion,
         device=device,
+    )
+    best_val_metrics_by_slot = _compute_metrics_by_slot(
+        y_true=best_val_y_true,
+        y_pred=best_val_y_pred,
+        slot_ids=np.asarray(datasets["val"].slot_ids_np, dtype=np.int64),
+        num_actions=num_actions,
+    )
+    test_metrics_by_slot = _compute_metrics_by_slot(
+        y_true=test_y_true,
+        y_pred=test_y_pred,
+        slot_ids=np.asarray(datasets["test"].slot_ids_np, dtype=np.int64),
+        num_actions=num_actions,
     )
 
     split_summary = {
@@ -310,8 +358,12 @@ def run_training(config: BCConfig) -> Path:
     metrics_payload = {
         "best_epoch": best_epoch,
         "best_val_macro_f1": best_val_macro_f1,
+        "best_val_loss": best_val_loss,
+        "best_val_metrics": best_val_metrics,
+        "best_val_metrics_by_slot": best_val_metrics_by_slot,
         "test_loss": test_loss,
         "test_metrics": test_metrics,
+        "test_metrics_by_slot": test_metrics_by_slot,
         "history": history,
     }
     report_payload = {
@@ -328,6 +380,10 @@ def run_training(config: BCConfig) -> Path:
     save_json(run_dir / "label_mapping.json", label_payload)
 
     print(f"Training complete. Best epoch: {best_epoch}, val_macro_f1={best_val_macro_f1:.4f}")
+    print(
+        f"Best-checkpoint val macro_f1={best_val_metrics['macro_f1']:.4f}, "
+        f"accuracy={best_val_metrics['accuracy']:.4f}"
+    )
     print(f"Test macro_f1={test_metrics['macro_f1']:.4f}, accuracy={test_metrics['accuracy']:.4f}")
     print(f"Artifacts saved to: {run_dir}")
     return run_dir
