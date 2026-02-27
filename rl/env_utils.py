@@ -17,7 +17,7 @@ class OvercookedRLWrapper(gym.Env):
 
         self.mdp = OvercookedGridworld.from_layout_name(layout_name)
         self.mlam = MediumLevelActionManager.from_pickle_or_compute(self.mdp, NO_COUNTERS_PARAMS, force_compute = False)
-        self.env = OvercookedEnv.from_mdp(self.mdp, horizon = 1200) # benchmark uses a horizon of 400. Setting to 1200 for testing purposes.
+        self.env = OvercookedEnv.from_mdp(self.mdp, horizon = 4800) # benchmark uses a horizon of 400. Setting to 1200 for testing purposes.
 
         dummy_state = self.mdp.get_standard_start_state()
         dummy_feat = self.mdp.featurize_state(dummy_state, self.mlam)[0]
