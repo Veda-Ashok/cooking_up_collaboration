@@ -3,6 +3,8 @@
 ## Building
 Replace the game directory in all the hint paths in `overcooked_mod_mono.csproj` with your game path.
 
+Install dotnet https://dotnet.microsoft.com/en-us/download
+
 Run:
 ```bash
 dotnet build -c Release
