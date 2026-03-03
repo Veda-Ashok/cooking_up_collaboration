@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace AgentMod
 {
-    [BepInPlugin("com.yourname.agentmod", "My Cool Mod", "1.0.0")]
+    [BepInPlugin("com.yourname.agentmod", "Agent Mod", "1.0.0")]
     public class AgentModPlugin : BaseUnityPlugin
     {
         private void Awake()
