@@ -55,10 +55,10 @@ class OvercookedRLWrapper(gym.Env):
 
     def step(self, action_p0):
 
-        if hasattr(action_p0, '__len__'):
-            idx_p0 = int(action_p0[0])
-        else:
-            idx_p0 = int(action_p0)
+        # if hasattr(action_p0, '__len__'):
+        #     idx_p0 = int(action_p0[0])
+        # else:
+        idx_p0 = int(action_p0)
 
         action_p0_conv = Action.INDEX_TO_ACTION[idx_p0]
 

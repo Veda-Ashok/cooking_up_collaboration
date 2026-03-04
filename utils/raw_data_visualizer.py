@@ -9,7 +9,6 @@ from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedState, Recipe
 from overcooked_ai_py.mdp.actions import Action
 
-
 if len(sys.argv) < 2:
     print("Please enter an input file path.")
     print("Usage: python3 raw_data_visualizer.py <input_file.csv>")
@@ -20,6 +19,7 @@ INPUT_FILE = sys.argv[1]
 STEM = Path(INPUT_FILE).stem
 
 video_count = len(list(Path('csv_visualized').glob(f'{STEM}_*'))) if Path('csv_visualized').exists() else 0
+
 img_dir = Path(f'csv_visualized/{STEM}_{video_count}')
 vid_dir = Path(f'gameplays/{STEM}_{video_count}.mp4')
 
@@ -30,7 +30,7 @@ Recipe.configure({"ingredients": ['onion', 'tomato']})
 df = pd.read_csv(f'./data/{INPUT_FILE}')
 visualizer = StateVisualizer()
 
-for i in range(500):
+for i in range(500): # Set to 500 to save some room (modify as needed)
     raw_state = json.loads(df.state[i])
     state_object = OvercookedState.from_dict(raw_state)
     grid_rep = ast.literal_eval(df.layout[i])
