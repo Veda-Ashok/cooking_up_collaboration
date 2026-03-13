@@ -229,3 +229,85 @@ Note:
 - Default inference now matches Overcooked style (`sampling_mode="sample"`), which helps avoid BC-vs-BC symmetry lock at spawn.
 - For deterministic behavior, set `sampling_mode` to `"argmax"` (and optionally `deadlock_break_after` > 0).
 - Since server requirements now include `torch`, do a docker rebuild if needed.
+
+## BC -> RL LSTM Fine-Tuning Baseline
+
+There is now a PyTorch RL baseline that starts from a trained BC LSTM checkpoint instead of random init.
+It trains a recurrent PPO policy against BC partner policies and supports collaboration shaping through reward shaping.
+
+### Train RL from BC init
+
+```bash
+python -m rl.train_lstm_bc_ppo \
+  --bc-init-checkpoint trained_models/bc/lstm_20260224_153831/best.pt \
+  --partner-checkpoints trained_models/bc/lstm_20260224_153831/best.pt \
+  --layout cramped_room \
+  --run-name rl_lstm_bc_v1 \
+  --sampling-mode sample \
+  --sampling-temperature 0.8 \
+  --reward-shaping-coef 0.2 \
+  --export-agent-name RLTorchLSTM_v1
+```
+
+Outputs are saved under:
+
+```bash
+trained_models/rl/<run_name>/
+```
+
+Key files:
+- `best_model.zip`
+- `last_model.zip`
+- `train_config.json`
+- `bc_transfer_report.json`
+- `metrics.json` (if eval callback produced logs)
+
+If `--export-agent-name` is set, a webapp-ready folder is created under:
+
+```bash
+webapp/server/static/assets/agents/<export_agent_name>/
+```
+
+### RL manifest type for webapp
+
+```json
+{
+  "type": "rl_torch",
+  "algo": "recurrent_ppo",
+  "policy": "MlpLstmPolicy",
+  "checkpoint": "best_model.zip",
+  "supported_layouts": ["cramped_room"],
+  "input_dim": 96,
+  "num_actions": 6,
+  "sampling_mode": "sample",
+  "sampling_temperature": 0.8,
+  "deterministic": false,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}
+```
+
+## Live rollout viewer (with optional MP4 save)
+
+You can run a local live rollout viewer while the game is being simulated, and optionally save video.
+
+```bash
+python -m rl.live_rollout \
+  --checkpoint trained_models/rl/rl_lstm_bc_v1/best_model.zip \
+  --algo recurrent_ppo \
+  --layout cramped_room \
+  --partner-checkpoint trained_models/bc/lstm_20260224_153831/best.pt \
+  --sampling-mode sample \
+  --sampling-temperature 0.8 \
+  --fps 10
+```
+
+Optional save:
+
+```bash
+python -m rl.live_rollout \
+  --checkpoint trained_models/rl/rl_lstm_bc_v1/best_model.zip \
+  --algo recurrent_ppo \
+  --sampling-mode argmax \
+  --save-video outputs/rollout.mp4 \
+  --no-display
+```

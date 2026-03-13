@@ -1,0 +1,15 @@
+{
+  "type": "rl_torch",
+  "algo": "recurrent_ppo",
+  "policy": "MlpLstmPolicy",
+  "checkpoint": "best_model.zip",
+  "supported_layouts": [
+    "cramped_room"
+  ],
+  "input_dim": 96,
+  "num_actions": 6,
+  "sampling_mode": "sample",
+  "sampling_temperature": 1.3,
+  "deterministic": false,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}

@@ -20,3 +20,4 @@ scipy
 gym==0.26.2
 ray[rllib]>=2.0.0
 torch
+sb3-contrib

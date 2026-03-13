@@ -10,6 +10,7 @@ A web application where humans can play Overcooked with trained AI agents.
 * [Dependencies](#dependencies)
 * [Using Pre-trained Agents](#using-pre-trained-agents)
 * [Using BC PyTorch Agents](#using-bc-pytorch-agents)
+* [Using RL PyTorch Agents](#using-rl-pytorch-agents)
 * [Updating Overcooked_ai](#updating-overcooked_ai)
 * [Configuration](#configuration)
 * [Legacy Code](#legacy-code)
@@ -122,6 +123,45 @@ Notes:
 - Default inference matches Overcooked-style sampling (`sampling_mode="sample"`), which helps prevent BC-vs-BC spawn deadlocks.
 - For deterministic behavior set `sampling_mode` to `"argmax"` (optionally with `deadlock_break_after` > 0).
 - BC agents use the same runtime interface as existing agents (`action(state)` and `reset()`), so they coexist with RLlib and pickle agents.
+
+## Using RL PyTorch Agents
+
+The server now supports RL checkpoints trained with Stable-Baselines3 / sb3-contrib via `rl_torch` manifests.
+
+1. Train and export an RL agent from repo root:
+```bash
+python -m rl.train_lstm_bc_ppo \
+  --bc-init-checkpoint trained_models/bc/lstm_20260224_153831/best.pt \
+  --layout cramped_room \
+  --run-name rl_lstm_bc_v1 \
+  --sampling-mode sample \
+  --sampling-temperature 0.8 \
+  --export-agent-name RLTorchLSTM_v1
+```
+2. Confirm folder exists:
+```bash
+webapp/server/static/assets/agents/RLTorchLSTM_v1/
+```
+3. Restart webapp (`./up.sh` or `./up.sh production`).
+4. Select `RLTorchLSTM_v1` from the agent dropdown.
+
+Manifest example:
+
+```json
+{
+  "type": "rl_torch",
+  "algo": "recurrent_ppo",
+  "policy": "MlpLstmPolicy",
+  "checkpoint": "best_model.zip",
+  "supported_layouts": ["cramped_room"],
+  "input_dim": 96,
+  "num_actions": 6,
+  "sampling_mode": "sample",
+  "sampling_temperature": 0.8,
+  "deterministic": false,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}
+```
 
 ## Use the human vs. human game mode.
 
