@@ -2,6 +2,7 @@ using BepInEx;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using UnityEngine;
 // using YourGameNamespace; // add if dnSpy shows a namespace for PlayerControls
@@ -11,8 +12,8 @@ namespace ExtractionMod
     [BepInPlugin("com.yourname.extractionmod", "Extraction Mod", "1.0.0")]
     public class ExtractionModPlugin : BaseUnityPlugin
     {
-        private Dictionary<Type, MonoBehaviour[]> _trackedObjects = new Dictionary<Type, MonoBehaviour[]>();
-        private Dictionary<string, string> _objectTypeMapping = new Dictionary<string, string>
+        private Dictionary<Type, MonoBehaviour[]> _trackedObjects = [];
+        private Dictionary<string, string> _objectTypeMapping = new()
         {
             { "CookingStation", "P" },
             { "Workstation", "W" },
@@ -27,11 +28,11 @@ namespace ExtractionMod
             { 11772, new string[] { "Onion", "Onion", "Onion" } },
             { 12064, new string[] { "Tomato", "Tomato", "Tomato" } },
             { 18460, new string[] { "Mushroom", "Mushroom", "Mushroom" } },
-            { 22012, new string[] { "Bun", "Steak" } },
-            { 21644, new string[] { "Bun", "Steak", "Lettuce" } },
-            { 9512, new string[] { "Bun", "Steak", "Lettuce", "Tomato" } },
+            { 22012, new string[] { "Bun", "Meat" } },
+            { 21644, new string[] { "Bun", "Meat", "Lettuce" } },
+            { 9512, new string[] { "Bun", "Meat", "Lettuce", "Tomato" } },
         };
-        private HashSet<int> _unmappedRecipeIds = new HashSet<int>();
+        private HashSet<int> _unmappedRecipeIds = [];
         private float _scanTimer;
         private float _logTimer;
 
@@ -46,7 +47,7 @@ namespace ExtractionMod
         {
 
             _gameloop = 0;
-            _orderControllers = new List<IOrderController>();
+            _orderControllers = [];
             Logger.LogInfo("ExtractionMod: Started and scanning for objects...");
             RefreshAllObjects();
         }
@@ -100,10 +101,10 @@ namespace ExtractionMod
                     int z = ComputePosition(pos.z, max_z, min_z, n);
                     string symbol = _objectTypeMapping.ContainsKey("PlayerControls") ? _objectTypeMapping["PlayerControls"] : "?";
                     Logger.LogInfo($"{symbol} ({obj.name}) pos: {pos} mapped to grid ({z},{x})");
-                    Player p = new Player
+                    Player p = new()
                     {
-                        position = new int[] { x, z },
-                        orientation = new int[] { 0, 1 }, //TODO: Get actual orientation from the player object
+                        position = [x, z],
+                        orientation = [0, 1], //TODO: Get actual orientation from the player object
                         held_object = null //TODO: Get actual held object from the player object
                     };
                     players.Add(p);
@@ -130,6 +131,26 @@ namespace ExtractionMod
                 }
             }
 
+            GameObject[] ingredients = GetAllIngredients();
+            for (int i = 0; i < ingredients.Length; i++)
+            {
+                GameObject ingredient = ingredients[i];
+                if (ingredient == null)
+                {
+                    continue;
+                }
+
+                Vector3 pos = ingredient.transform.position;
+                int x = ComputePosition(pos.x, max_x, min_x, m);
+                int z = ComputePosition(pos.z, max_z, min_z, n);
+                Logger.LogInfo($"G ({ingredient.name}) tag: {ingredient.tag} pos: {pos} mapped to grid ({z},{x})");
+                objects.Add(new Element
+                {
+                    name = ingredient.name,
+                    position = new int[] { x, z }
+                });
+            }
+
             _objects = objects;
             _players = players;
             _orders = BuildOrdersFromControllers();
@@ -147,14 +168,14 @@ namespace ExtractionMod
                 }
             }
 
-            List<Type> staticElements = new List<Type>
-            {
+            List<Type> staticElements =
+            [
                 typeof(CookingStation),
                 typeof(Workstation),
                 typeof(PlateStation),
                 typeof(PlateReturnStation),
                 typeof(PickupItemSpawner),
-            };
+            ];
             foreach (var type in staticElements)
             {
                 if (_trackedObjects.ContainsKey(type))
@@ -211,8 +232,8 @@ namespace ExtractionMod
 
         private void RefreshOrderControllers()
         {
-            CampaignFlowController[] flows = UnityEngine.Object.FindObjectsOfType<CampaignFlowController>();
-            List<IOrderController> found = new List<IOrderController>();
+            CampaignFlowController[] flows = FindObjectsOfType<CampaignFlowController>();
+            List<IOrderController> found = [];
 
             for (int i = 0; i < flows.Length; i++)
             {
@@ -248,12 +269,33 @@ namespace ExtractionMod
             RefreshObjects<Workstation>(); //Cutting board
             RefreshObjects<PlayerControls>(); //Players
             RefreshOrderControllers();
-            //Missing sink, onions
+            Logger.LogInfo($"ExtractionMod: Found {GetAllIngredients().Length} tagged ingredient GameObjects.");
+            //Missing sink
+        }
+
+        private GameObject[] GetAllIngredients()
+        {
+            GameObject[] preIngredients = FindGameObjectsWithTagSafe("Pre-Ingredient");
+            GameObject[] ingredients = FindGameObjectsWithTagSafe("Ingredient");
+            return preIngredients.Union(ingredients).ToArray();
+        }
+
+        private GameObject[] FindGameObjectsWithTagSafe(string tagName)
+        {
+            try
+            {
+                return GameObject.FindGameObjectsWithTag(tagName);
+            }
+            catch (UnityException)
+            {
+                Logger.LogInfo($"ExtractionMod: Tag '{tagName}' not found in current scene.");
+                return [];
+            }
         }
 
         private List<Order> BuildOrdersFromControllers()
         {
-            List<Order> orders = new List<Order>();
+            List<Order> orders = [];
             if (_orderControllers == null || _orderControllers.Count == 0)
             {
                 return orders;
@@ -325,7 +367,7 @@ namespace ExtractionMod
 
         private List<Order> ExtractOrdersFromController(IOrderController orderController)
         {
-            List<Order> orders = new List<Order>();
+            List<Order> orders = [];
             FieldInfo activeRecipesField = orderController.GetType().GetField("m_activeRecipes", BindingFlags.Instance | BindingFlags.NonPublic);
             if (activeRecipesField == null)
             {
