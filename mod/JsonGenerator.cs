@@ -5,17 +5,18 @@ using System.IO;
 public static class JsonGenerator{
 
     public static string GenerateGameJson(List<Player> players, List<Element> objects, List<Order> orders, string[,] layoutGrid,
-                                          string layoutName, float timeLeft, float timeElapsed, int gameloop ) 
+                                          string layoutName, float timeLeft, float timeElapsed, int gameloop )
     {
         //Prepare and Stringify the GameState
-        GameState internalState = new GameState {
+        GameState internalState = new()
+        {
             players = players,
             objects = objects,
             all_orders = orders,
             timestep = gameloop-1
         };
         string stateString = ConvertGameStateToString(internalState);
-        
+
         string layoutString = ConvertLayoutToString(layoutGrid);
 
         GameRecord record = new GameRecord {
@@ -37,9 +38,9 @@ public static class JsonGenerator{
     }
 
     private static string ConvertLayoutToString(string[,] grid) {
-        List<string> rows = new List<string>();
+        List<string> rows = [];
         for (int i = 0; i < grid.GetLength(0); i++) {
-            List<string> row = new List<string>();
+            List<string> row = [];
             for (int j = 0; j < grid.GetLength(1); j++) {
                 row.Add(grid[i, j]);
             }
@@ -50,21 +51,21 @@ public static class JsonGenerator{
 
     private static string ConvertGameStateToString(GameState gs) {
         // 1. Serialize Players
-        List<string> playerEntries = new List<string>();
+        List<string> playerEntries = [];
         foreach (var p in gs.players) {
             playerEntries.Add($"{{\"position\": [{p.position[0]}, {p.position[1]}], \"orientation\": [{p.orientation[0]}, {p.orientation[1]}], \"held_object\": \"{p.held_object ?? ""}\"}}");
         }
         string playersJson = "[" + string.Join(", ", [..playerEntries]) + "]";
 
         // 2. Serialize Objects (Elements)
-        List<string> objectEntries = new List<string>();
+        List<string> objectEntries = [];
         foreach (var obj in gs.objects) {
             objectEntries.Add($"{{\"name\": \"{obj.name}\", \"position\": [{obj.position[0]}, {obj.position[1]}]}}");
         }
         string objectsJson = "[" + string.Join(", ", [..objectEntries]) + "]";
 
         // 3. Serialize Orders
-        List<string> orderEntries = new List<string>();
+        List<string> orderEntries = [];
         foreach (var order in gs.all_orders) {
             string ingredients = "[\"" + string.Join("\", \"", order.ingredients) + "\"]";
             orderEntries.Add($"{{\"ingredients\": {ingredients}}}");

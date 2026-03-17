@@ -83,7 +83,7 @@ namespace ExtractionMod
 
                 LogOrderDebugInfo();
                 Logger.LogInfo($"ComputeState finished. Players: {_players.Count}, Objects: {_objects.Count}");
-                string temp =JsonGenerator.GenerateGameJson(_players, _objects, _orders, _layoutGrid, "layout1", time_left, time_elapsed, _gameloop);
+                string temp = JsonGenerator.GenerateGameJson(_players, _objects, _orders, _layoutGrid, "layout1", time_left, time_elapsed, _gameloop);
                 Logger.LogInfo($"state: {temp}");
 
             }
@@ -122,7 +122,7 @@ namespace ExtractionMod
                     int z = ComputePosition(pos.z, max_z, min_z, n);
                     string symbol = _objectTypeMapping.ContainsKey("IngredientContainer") ? _objectTypeMapping["IngredientContainer"] : "?";
                     Logger.LogInfo($"{symbol} ({obj.name}) pos: {pos} mapped to grid ({z},{x})");
-                    Element e = new Element
+                    Element e = new()
                     {
                         name = obj.name,
                         position = new int[] { x, z }
@@ -147,7 +147,7 @@ namespace ExtractionMod
                 objects.Add(new Element
                 {
                     name = ingredient.name,
-                    position = new int[] { x, z }
+                    position = [x, z]
                 });
             }
 
@@ -230,6 +230,16 @@ namespace ExtractionMod
             Logger.LogInfo($"ExtractionMod: Found {found.Length} {typeof(T).Name} instances.");
         }
 
+        private void RefreshAndLogObjects<T>() where T : MonoBehaviour
+        {
+            RefreshObjects<T>();
+
+            if (_trackedObjects.TryGetValue(typeof(T), out MonoBehaviour[] trackedObjects))
+            {
+                LogPositions((T[])trackedObjects);
+            }
+        }
+
         private void RefreshOrderControllers()
         {
             CampaignFlowController[] flows = FindObjectsOfType<CampaignFlowController>();
@@ -261,16 +271,19 @@ namespace ExtractionMod
 
         private void RefreshAllObjects()
         {
-            RefreshObjects<PickupItemSpawner>(); //Dispenser Crate
-            RefreshObjects<IngredientContainer>(); //Pots and Plates
-            RefreshObjects<CookingStation>(); //Stove
-            RefreshObjects<PlateReturnStation>(); //Dirty plates station and sink clean plates station
-            RefreshObjects<PlateStation>(); //Delivery station
-            RefreshObjects<Workstation>(); //Cutting board
-            RefreshObjects<PlayerControls>(); //Players
+            RefreshObjects<IngredientContainer>(); // Pots and Plates
+            RefreshObjects<PlateReturnStation>(); // Dirty plates station and sink clean plates station
+            RefreshObjects<PlayerControls>(); // Players
+            RefreshAndLogObjects<AttachStation>(); // TableTops DryingPart (clean plates), PlateStation, and chopping boards.
+            RefreshAndLogObjects<Interactable>(); // Fire extinguisher, WashPart (sink), and chopping boards.
             RefreshOrderControllers();
             Logger.LogInfo($"ExtractionMod: Found {GetAllIngredients().Length} tagged ingredient GameObjects.");
-            //Missing sink
+
+            // RefreshObjects<PlateStation>(); // Delivery station. Included in AttachStation.
+            // RefreshObjects<Workstation>(); // Cutting board. Included in AttachStation.
+            // RefreshObjects<PlacementContainer>(); // The same as IngredientContainer.
+            // RefreshObjects<CookingStation>(); // Stove. Included in AttachStation.
+            // RefreshObjects<PickupItemSpawner>(); // Dispenser Crate. Included in AttachStation.
         }
 
         private GameObject[] GetAllIngredients()
