@@ -3,69 +3,33 @@ from pathlib import Path
 
 import pyray as rl
 
+try:
+    from .physics import Level, TABLETOP_SIZE, WORLD_SCALE
+except ImportError:
+    from physics import Level, TABLETOP_SIZE, WORLD_SCALE
+
 
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 LEVEL_PATH = Path(__file__).with_name("level_1_1.json")
-WORLD_SCALE = 50.0
-OBJECT_SIZE = WORLD_SCALE * 1.25
-PLAYER_START_RADIUS = WORLD_SCALE * 0.35
-LABEL_FONT_SIZE = 10
+OBJECT_SIZE = WORLD_SCALE * TABLETOP_SIZE.x
 CAMERA_PADDING_PIXELS = 100
 CAMERA_MIN_ZOOM = 0.05
 CAMERA_MAX_ZOOM = 10.0
 CAMERA_ZOOM_STEP = 0.1
 
-CATEGORY_COLORS = {
-    "tabletop": rl.LIGHTGRAY,
-    "chopping_board": rl.BROWN,
-    "stove": rl.RED,
-    "dispenser": rl.DARKGREEN,
-    "delivery_station": rl.GOLD,
-    "plate_return": rl.SKYBLUE,
-    "plate_return_station": rl.BLUE,
-    "drying_rack": rl.DARKBLUE,
-    "sink": rl.DARKBLUE,
-    "fire_extinguisher": rl.MAROON,
-    "pot": rl.DARKGRAY,
-    "plate": rl.WHITE,
-}
-PLAYER_START_COLOR = rl.MAGENTA
 
-
-def load_level_data(path: Path) -> tuple[list[dict], list[list[float]]]:
+def load_level_data(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as file:
-        level_data = json.load(file)
-
-    if "layout" in level_data:
-        return level_data["layout"], level_data.get("player_starts", [])
-
-    if "layout_objects" in level_data:
-        return level_data["layout_objects"], []
-
-    if "raw_layout_objects" in level_data:
-        raw_layout_objects = level_data["raw_layout_objects"]
-        if isinstance(raw_layout_objects, str):
-            return json.loads(raw_layout_objects), []
-        return raw_layout_objects, []
-
-    raise ValueError(f"No layout objects found in {path}")
+        return json.load(file)
 
 
 def to_world_xy(position: list[float]) -> rl.Vector2:
     return rl.Vector2(position[0] * WORLD_SCALE, -position[1] * WORLD_SCALE)
 
 
-def get_layout_object_position(layout_object: dict) -> list[float]:
-    if "position" in layout_object:
-        return layout_object["position"]
-
-    world_position = layout_object["world_position"]
-    return [world_position[0], world_position[2]]
-
-
 def collect_world_points(layout_objects: list[dict], player_starts: list[list[float]]) -> list[rl.Vector2]:
-    points = [to_world_xy(get_layout_object_position(layout_object)) for layout_object in layout_objects]
+    points = [to_world_xy(layout_object.get("position", [0.0, 0.0])) for layout_object in layout_objects]
     points.extend(to_world_xy(player_start) for player_start in player_starts)
     return points
 
@@ -101,46 +65,6 @@ def build_camera(layout_objects: list[dict], player_starts: list[list[float]]) -
     )
 
 
-def get_object_color(layout_object: dict) -> rl.Color:
-    object_type = layout_object.get("type", layout_object.get("category"))
-    return CATEGORY_COLORS.get(object_type, rl.GRAY)
-
-
-def draw_layout_object(layout_object: dict) -> None:
-    world_position = get_layout_object_position(layout_object)
-    world_xy = to_world_xy(world_position)
-    rect = rl.Rectangle(
-        world_xy.x - (OBJECT_SIZE / 2),
-        world_xy.y - (OBJECT_SIZE / 2),
-        OBJECT_SIZE,
-        OBJECT_SIZE,
-    )
-
-    color = get_object_color(layout_object)
-    rl.draw_rectangle_rec(rect, color)
-    rl.draw_rectangle_lines_ex(rect, 2.0, rl.BLACK)
-
-    label = layout_object.get("name", layout_object["type"])
-    ingredient = layout_object.get("ingredient")
-    if ingredient:
-        label = f"{label}:{ingredient}"
-    # rl.draw_text(
-    #     label,
-    #     int(world_xy.x - (OBJECT_SIZE / 2)),
-    #     int(world_xy.y - (OBJECT_SIZE * 1.2)),
-    #     LABEL_FONT_SIZE,
-    #     rl.BLACK,
-    # )
-
-
-def draw_player_start(player_start: list[float], index: int) -> None:
-    world_xy = to_world_xy(player_start)
-
-    rl.draw_circle_v(world_xy, PLAYER_START_RADIUS, PLAYER_START_COLOR)
-    rl.draw_circle_lines(int(world_xy.x), int(world_xy.y), PLAYER_START_RADIUS, rl.BLACK)
-    # rl.draw_text(f"P{index + 1}", int(world_xy.x - 0.15), int(world_xy.y - 0.1), 16, rl.BLACK)
-
-
 def update_camera(camera: rl.Camera2D, layout_objects: list[dict], player_starts: list[list[float]]) -> None:
     if rl.is_key_pressed(rl.KEY_R):
         fitted_camera = build_camera(layout_objects, player_starts)
@@ -164,24 +88,28 @@ def main():
     rl.init_window(WINDOW_WIDTH, WINDOW_HEIGHT, "Ravioli Simulator")
     rl.set_target_fps(60)
 
-    layout_objects, player_starts = load_level_data(LEVEL_PATH)
-    camera = build_camera(layout_objects, player_starts)
+    level_data = load_level_data(LEVEL_PATH)
+    level = Level(level_data)
+    camera = build_camera(level.layout_objects, level.player_starts)
 
     while not rl.window_should_close():
-        update_camera(camera, layout_objects, player_starts)
+        update_camera(camera, level.layout_objects, level.player_starts)
+        level.update(rl.get_frame_time())
 
         rl.begin_drawing()
         rl.clear_background(rl.RAYWHITE)
         rl.begin_mode_2d(camera)
 
-        for layout_object in layout_objects:
-            draw_layout_object(layout_object)
-
-        for index, player_start in enumerate(player_starts):
-            draw_player_start(player_start, index)
+        level.draw()
 
         rl.end_mode_2d()
-        rl.draw_text("Mouse wheel: zoom | Middle drag: pan | R: refit camera", 20, 20, 20, rl.DARKGRAY)
+        rl.draw_text(
+            "WASD: P1 | Arrow keys: P2 | Mouse wheel: zoom | Middle drag: pan | R: refit camera",
+            20,
+            20,
+            20,
+            rl.DARKGRAY,
+        )
 
         rl.end_drawing()
 
