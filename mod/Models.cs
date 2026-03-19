@@ -21,6 +21,13 @@ public class Element {
 }
 
 [Serializable]
+public class LayoutObject {
+    public string type;
+    public string ingredient;
+    public float[] position;
+}
+
+[Serializable]
 public class GameState {
     public List<Player> players;
     public List<Element> objects;

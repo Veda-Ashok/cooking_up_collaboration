@@ -40,6 +40,8 @@ namespace ExtractionMod
         private List<Player> _players;
         private List<Element> _objects;
         private List<Order> _orders;
+        private List<LayoutObject> _layoutObjects;
+        private List<float[]> _playerStartPositions;
         private List<IOrderController> _orderControllers;
         private int _gameloop;
 
@@ -47,6 +49,8 @@ namespace ExtractionMod
         {
 
             _gameloop = 0;
+            _layoutObjects = [];
+            _playerStartPositions = [];
             _orderControllers = [];
             Logger.LogInfo("ExtractionMod: Started and scanning for objects...");
             RefreshAllObjects();
@@ -84,6 +88,7 @@ namespace ExtractionMod
                 LogOrderDebugInfo();
                 Logger.LogInfo($"ComputeState finished. Players: {_players.Count}, Objects: {_objects.Count}");
                 string temp = JsonGenerator.GenerateGameJson(_players, _objects, _orders, _layoutGrid, "layout1", time_left, time_elapsed, _gameloop);
+                JsonGenerator.GenerateLevelJson(_layoutObjects, _playerStartPositions);
                 Logger.LogInfo($"state: {temp}");
 
             }
@@ -154,6 +159,8 @@ namespace ExtractionMod
             _objects = objects;
             _players = players;
             _orders = BuildOrdersFromControllers();
+            _layoutObjects = BuildLayoutObjects();
+            _playerStartPositions = BuildPlayerStartPositions();
         }
 
         private void ComputeLayout(int n, int m, float max_x, float min_x, float max_z, float min_z)
@@ -274,9 +281,11 @@ namespace ExtractionMod
             RefreshObjects<IngredientContainer>(); // Pots and Plates
             RefreshObjects<PlateReturnStation>(); // Dirty plates station and sink clean plates station
             RefreshObjects<PlayerControls>(); // Players
-            RefreshAndLogObjects<AttachStation>(); // TableTops DryingPart (clean plates), PlateStation, and chopping boards.
-            RefreshAndLogObjects<Interactable>(); // Fire extinguisher, WashPart (sink), and chopping boards.
+            RefreshObjects<PickupItemSpawner>(); // Dispenser crates
+            RefreshObjects<AttachStation>(); // TableTops DryingPart (clean plates), PlateStation, and chopping boards.
+            RefreshObjects<Interactable>(); // Fire extinguisher, WashPart (sink), and chopping boards.
             RefreshOrderControllers();
+            LogPickupItemSpawnerDetails();
             Logger.LogInfo($"ExtractionMod: Found {GetAllIngredients().Length} tagged ingredient GameObjects.");
 
             // RefreshObjects<PlateStation>(); // Delivery station. Included in AttachStation.
@@ -325,6 +334,244 @@ namespace ExtractionMod
             }
 
             return orders;
+        }
+
+        private List<LayoutObject> BuildLayoutObjects()
+        {
+            List<LayoutObject> layoutObjects = [];
+            AppendLayoutObjects<AttachStation>(layoutObjects);
+            AppendLayoutObjects<Interactable>(layoutObjects);
+            AppendLayoutObjects<IngredientContainer>(layoutObjects);
+            AppendLayoutObjects<PlateReturnStation>(layoutObjects);
+
+            Logger.LogInfo($"ExtractionMod: Built {layoutObjects.Count} layout objects for export.");
+            return layoutObjects;
+        }
+
+        private List<float[]> BuildPlayerStartPositions()
+        {
+            List<float[]> playerStartPositions = [];
+            if (!_trackedObjects.TryGetValue(typeof(PlayerControls), out MonoBehaviour[] trackedObjects))
+            {
+                return playerStartPositions;
+            }
+
+            for (int i = 0; i < trackedObjects.Length; i++)
+            {
+                PlayerControls player = trackedObjects[i] as PlayerControls;
+                if (player == null)
+                {
+                    continue;
+                }
+
+                Vector3 pos = player.transform.position;
+                playerStartPositions.Add([pos.x, pos.z]);
+            }
+
+            return playerStartPositions;
+        }
+
+        private void AppendLayoutObjects<T>(List<LayoutObject> layoutObjects)
+            where T : MonoBehaviour
+        {
+            if (!_trackedObjects.TryGetValue(typeof(T), out MonoBehaviour[] trackedObjects))
+            {
+                return;
+            }
+
+            for (int i = 0; i < trackedObjects.Length; i++)
+            {
+                T obj = trackedObjects[i] as T;
+                if (obj == null)
+                {
+                    continue;
+                }
+
+                Vector3 pos = obj.transform.position;
+                layoutObjects.Add(new LayoutObject
+                {
+                    type = ClassifyLayoutObject(obj),
+                    ingredient = GetLayoutObjectIngredient(obj),
+                    position = [pos.x, pos.z]
+                });
+            }
+        }
+
+        private string ClassifyLayoutObject(MonoBehaviour obj)
+        {
+            if (obj == null)
+            {
+                return "unknown";
+            }
+
+            string name = obj.name ?? string.Empty;
+
+            if (obj is AttachStation)
+            {
+                if (name.StartsWith("TableTop_", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "tabletop";
+                }
+
+                if (name.IndexOf("ChoppingBoard", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "chopping_board";
+                }
+
+                if (name.IndexOf("CookingStation", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "stove";
+                }
+
+                if (name.IndexOf("DispenserCrate", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "dispenser";
+                }
+
+                if (name.IndexOf("PlateStation", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "delivery_station";
+                }
+
+                if (name.IndexOf("PlateReturn", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "plate_return";
+                }
+
+                if (name.IndexOf("DryingPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "drying_rack";
+                }
+
+                return "attach_station";
+            }
+
+            if (obj is Interactable)
+            {
+                if (name.IndexOf("FireExtinguisher", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "fire_extinguisher";
+                }
+
+                if (name.IndexOf("WashingPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "sink";
+                }
+
+                if (name.IndexOf("ChoppingBoard", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "chopping_board";
+                }
+
+                return "interactable";
+            }
+
+            if (obj is IngredientContainer)
+            {
+                if (name.IndexOf("Pot", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "pot";
+                }
+
+                if (name.IndexOf("Plate", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return "plate";
+                }
+
+                return "ingredient_container";
+            }
+
+            if (obj is PlateReturnStation)
+            {
+                return "plate_return_station";
+            }
+
+            return obj.GetType().Name;
+        }
+
+        private string GetLayoutObjectIngredient(MonoBehaviour obj)
+        {
+            if (obj == null)
+            {
+                return null;
+            }
+
+            if (obj is AttachStation && obj.name.IndexOf("DispenserCrate", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                PickupItemSpawner spawner = FindMatchingPickupItemSpawner(obj.transform.position);
+                string ingredientName = InferIngredientName(spawner);
+                if (!string.IsNullOrEmpty(ingredientName))
+                {
+                    return ingredientName.ToLowerInvariant();
+                }
+            }
+
+            return null;
+        }
+
+        private PickupItemSpawner FindMatchingPickupItemSpawner(Vector3 position)
+        {
+            if (!_trackedObjects.TryGetValue(typeof(PickupItemSpawner), out MonoBehaviour[] trackedObjects))
+            {
+                return null;
+            }
+
+            PickupItemSpawner bestMatch = null;
+            float bestDistance = 0.75f;
+
+            for (int i = 0; i < trackedObjects.Length; i++)
+            {
+                PickupItemSpawner spawner = trackedObjects[i] as PickupItemSpawner;
+                if (spawner == null)
+                {
+                    continue;
+                }
+
+                float distance = Vector3.Distance(spawner.transform.position, position);
+                if (distance <= bestDistance)
+                {
+                    bestDistance = distance;
+                    bestMatch = spawner;
+                }
+            }
+
+            return bestMatch;
+        }
+
+        private void LogPickupItemSpawnerDetails()
+        {
+            if (!_trackedObjects.TryGetValue(typeof(PickupItemSpawner), out MonoBehaviour[] trackedObjects))
+            {
+                return;
+            }
+
+            for (int i = 0; i < trackedObjects.Length; i++)
+            {
+                PickupItemSpawner spawner = trackedObjects[i] as PickupItemSpawner;
+                if (spawner == null)
+                {
+                    continue;
+                }
+
+                GameObject itemPrefab = spawner.GetItemPrefab();
+                string inferredIngredient = InferIngredientName(spawner);
+
+                Logger.LogInfo(
+                    $"ExtractionMod: PickupItemSpawner '{spawner.name}' pos: {spawner.transform.position} " +
+                    $"itemPrefab='{(itemPrefab != null ? itemPrefab.name : "<null>")}' " +
+                    $"ingredient='{(inferredIngredient ?? "<unknown>")}'");
+            }
+        }
+
+        private string InferIngredientName(PickupItemSpawner spawner)
+        {
+            if (spawner == null)
+            {
+                return null;
+            }
+
+            GameObject itemPrefab = spawner.GetItemPrefab();
+            return itemPrefab != null ? itemPrefab.name : null;
         }
 
         private void LogOrderDebugInfo()
