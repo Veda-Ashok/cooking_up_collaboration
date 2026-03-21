@@ -567,11 +567,11 @@ class Player:
         player_num: int,
         level: "Level",
         position: b2Vec2,
-        agent: Agent | None = None,
+        agent: Agent,
     ):
         self.player_num = player_num
         self.radius = 0.4
-        self.move_speed = 7.2
+        self.move_speed = 7.2 * 60
         self.agent = agent
         self.level = level
         self.held_object: GameObject | None = None
@@ -629,10 +629,9 @@ class Player:
                     interactable.interact()
 
     def update(self, delta_time: float) -> None:
-        if self.agent is not None:
-            input_state = self.agent.update(delta_time, create_game_state(self.level))
+        input_state = self.agent.update(delta_time, create_game_state(self.level))
         move_x, move_y = self.get_move_direction(input_state)
-        self.body.linearVelocity = (move_x * self.move_speed, move_y * self.move_speed)
+        self.body.linearVelocity = (move_x * self.move_speed * delta_time, move_y * self.move_speed * delta_time)
         self.pick_up_or_put_down(input_state)
         self.do_interact(input_state)
         if self.held_object is not None:
@@ -656,7 +655,7 @@ class Level:
         self.position_iterations = 3
         self.world = b2World(gravity=(0, 0), doSleep=True)
         self.players: list[Player] = []
-        self.game_objects: list[object] = []
+        self.game_objects: list[GameObject] = []
         self.interactables: list[Interactable] = []
         self.object_holders: list[ObjectHolder] = []
 
