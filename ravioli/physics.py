@@ -79,6 +79,19 @@ def get_composite(holder: "ObjectHolder") -> "Composite | None":
     return None
 
 
+def draw_progress_bar(position: rl.Vector2, progress: float) -> None:
+    progress_width = OBJECT_DRAW_SIZE
+    progress_height = 5.0
+    progress_rect = rl.Rectangle(
+        position.x - (progress_width / 2),
+        position.y - OBJECT_DRAW_SIZE - progress_height - 2.0,
+        progress_width * progress,
+        progress_height,
+    )
+    rl.draw_rectangle_rec(progress_rect, rl.GREEN)
+    rl.draw_rectangle_lines_ex(progress_rect, 1.0, rl.BLACK)
+
+
 class GameObject:
     def __init__(self, level: "Level"):
         self.level: "Level" = level
@@ -148,14 +161,39 @@ class Interactable(ObjectHolder):
     Base class for interactable objects in the game world.
     When a player is within range of an interactable, they can interact with it by pressing the interact button.
     """
+    def __init__(self, level):
+        super().__init__(level)
+        self.total_time = 2.0
+        self.current_time = 0.0
+        self.progress = 0.0
+        self.do_interact = False
+
+    def update(self, delta_time: float) -> None:
+        super().update(delta_time)
+        if self.do_interact:
+            self.current_time += delta_time
+            # TODO: We can make progress go over 1.0 if we want things to catch on fire.
+            self.progress = min(self.current_time / self.total_time, 1.0)
+        if self.progress >= 1.0:
+            self.do_interact = False
+
     def interact(self) -> None:
-        pass
+        self.do_interact = not self.do_interact
+        if self.progress >= 1.0:
+            self.do_interact = False
+
+    def put_down(self, obj: "Holdable") -> bool:
+        result = super().put_down(obj)
+        if result and isinstance(obj, Onion):
+            self.progress = obj.progress
+            self.current_time = self.progress * self.total_time
+        return result
 
 
 class Onion(Holdable):
     def __init__(self, level: "Level"):
         super().__init__(level)
-        self.state = "whole"
+        self.progress = 0.0
         self.body = level.world.CreateStaticBody()
 
     def update(self, delta_time: float) -> None:
@@ -163,12 +201,8 @@ class Onion(Holdable):
 
     def draw(self) -> None:
         color = rl.GRAY
-        if self.state == "whole":
-            color = rl.GRAY
-        elif self.state == "chopped":
+        if self.progress == 1.0:
             color = rl.YELLOW
-        elif self.state == "cooked":
-            color = rl.BROWN
 
         draw_centered_circle(center=physics_to_world(self.body.position), radius=OBJECT_DRAW_SIZE * 0.25, color=color)
 
@@ -177,7 +211,7 @@ class Soup(Composite):
     def __init__(self, level: "Level"):
         super().__init__(level)
         self.body = level.world.CreateStaticBody()
-        self.state = "uncooked"
+        self.progress = 0.0
         self.ingredients = []
 
     def draw(self) -> None:
@@ -185,7 +219,7 @@ class Soup(Composite):
 
     def add_ingredient(self, ingredient: Onion) -> bool:
         if len(self.ingredients) < 3:
-            if isinstance(ingredient, Onion) and ingredient.state == "chopped":
+            if isinstance(ingredient, Onion) and ingredient.progress == 1.0:
                 self.ingredients.append(ingredient)
                 self.level.remove_game_object(ingredient)
                 return True
@@ -258,17 +292,42 @@ class Stove(Interactable):
         self.size = b2Vec2(TABLETOP_SIZE.x, TABLETOP_SIZE.y)
         self.color = rl.RED
 
+    def update(self, delta_time):
+        self.do_interact = False
+        if isinstance(self.held_object, Pot)and isinstance(self.held_object.held_object, Soup):
+                # Make progress if there is a soup.
+                self.do_interact = True
+                self.held_object.held_object.progress = self.progress
+        super().update(delta_time)
+
     def draw(self) -> None:
         draw_centered_square(
             center=physics_to_world(self.body.position),
             size=WORLD_SCALE * self.size.x,
             color=self.color,
         )
+        if self.held_object is not None and isinstance(self.held_object, Pot) and isinstance(self.held_object.held_object, Soup):
+            draw_progress_bar(physics_to_world(self.body.position), self.progress)
 
     def interact(self) -> None:
-        if isinstance(self.held_object, Pot):
-            if isinstance(self.held_object.held_object, Onion) and self.held_object.held_object.state == "chopped":
-                self.held_object.held_object.state = "cooked"
+        # Stove is always on.
+        pass
+
+    def pick_up(self, player: "Player") -> Holdable | None:
+        result = super().pick_up(player)
+        if result:
+            self.progress = 0.0
+            self.current_time = 0.0
+            self.do_interact = False
+        return result
+
+    def put_down(self, obj: Holdable) -> bool:
+        result = super().put_down(obj)
+        if result and isinstance(obj, Pot) and isinstance(obj.held_object, Soup):
+            # If we put down a pot with soup on the stove, take its progress.
+            self.progress = obj.held_object.progress
+            self.current_time = self.progress * self.total_time
+        return result
 
 
 class ChoppingBoard(Interactable):
@@ -283,16 +342,23 @@ class ChoppingBoard(Interactable):
         self.size = b2Vec2(TABLETOP_SIZE.x, TABLETOP_SIZE.y)
         self.color = rl.BROWN
 
+    def update(self, delta_time):
+        super().update(delta_time)
+        if isinstance(self.held_object, Onion):
+            self.held_object.progress = self.progress
+
     def draw(self) -> None:
         draw_centered_square(
             center=physics_to_world(self.body.position),
             size=WORLD_SCALE * self.size.x,
             color=self.color,
         )
+        if self.held_object is not None and isinstance(self.held_object, Onion):
+            draw_progress_bar(physics_to_world(self.body.position), self.progress)
 
     def interact(self) -> None:
-        if isinstance(self.held_object, Onion) and self.held_object.state == "whole":
-            self.held_object.state = "chopped"
+        if isinstance(self.held_object, Onion):
+            super().interact()
 
 
 class Plate(Holdable, IngredientHolder):
@@ -329,11 +395,15 @@ class Pot(Holdable, IngredientHolder):
     def put_down(self, obj: GameObject) -> bool:
         # Pots can only hold cut onions.
         if self.held_object is None:
-            if isinstance(obj, Onion) and obj.state == "chopped":
+            if isinstance(obj, Onion) and obj.progress == 1.0:
                 soup = Soup(self.level)
                 soup.add_ingredient(obj)
                 self.level.game_objects.append(soup)
                 self.held_object = soup
+                # Set the stove progress to 0.
+                if isinstance(obj.parent, Stove):
+                    obj.parent.progress = 0.0
+                    obj.parent.current_time = 0.0
                 return True
             elif isinstance(obj, IngredientHolder) and obj.held_object is not None and isinstance(obj.held_object, Soup):
                 # When putting down an IngredientHolder, take its contents instead.
@@ -343,8 +413,14 @@ class Pot(Holdable, IngredientHolder):
                 # Return False because we don't want the player to drop the IngredientHolder.
                 return False
         elif isinstance(self.held_object, Soup):
-            if isinstance(obj, Onion) and obj.state == "chopped":
-                return self.held_object.add_ingredient(obj)
+            if isinstance(obj, Onion) and obj.progress == 1.0:
+                added = self.held_object.add_ingredient(obj)
+                if added:
+                    # Reduce stove progress by 0.33 for each added ingredient, but not below 0.
+                    if isinstance(self.parent, Stove):
+                        self.parent.progress = max(0.0, self.parent.progress - 0.33)
+                        self.parent.current_time = self.parent.progress * self.parent.total_time
+                return added
             elif isinstance(obj, IngredientHolder) and obj.held_object is None:
                 # When putting down an IngredientHolder that is empty, transfer our contents instead.
                 obj.held_object = self.held_object
@@ -388,12 +464,11 @@ class DeliveryStation(ObjectHolder):
         )
 
     def put_down(self, obj: Plate) -> bool:
-        # Only accept plates, and only if they have a cooked onion on them.
+        # Only accept plates, and only if they have a cooked soup on them.
         # DeliveryStation can accept an unlimited number of plates.
-        if isinstance(obj, Plate) and isinstance(obj.held_object, Onion) and obj.held_object.state == "cooked":
-            super().put_down(obj)
-            del obj.held_object.held_object
-            del obj.held_object
+        if isinstance(obj, Plate) and isinstance(obj.held_object, Soup) and obj.held_object.progress == 1.0:
+            if super().put_down(obj):
+                self.level.game_objects.remove(obj.held_object)
             obj.held_object = None
             return True
         return False
