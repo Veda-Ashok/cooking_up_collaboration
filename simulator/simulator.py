@@ -20,7 +20,7 @@ def main():
     rl.set_target_fps(60)
 
     level_data = load_level_data(LEVEL_PATH)
-    level = Level(level_data)
+    level = Level(level_data, export_state=True, export_every_n_frames=60 / 15)
 
     while not rl.window_should_close():
         level.update(rl.get_frame_time())

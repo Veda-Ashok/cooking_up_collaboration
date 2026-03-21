@@ -1,8 +1,11 @@
+import json
 import math
 import pyray as rl
 
+from datetime import datetime
+from pathlib import Path
 from Box2D import b2CircleShape, b2PolygonShape, b2Vec2, b2World
-from ravioli.agents import RandomAgent, HumanAgent, Agent, InputState
+from ravioli.agents import RandomAgent, HumanAgent, Agent
 
 
 WORLD_SCALE = 50.0
@@ -585,13 +588,14 @@ class Player:
             friction=0.0,
             restitution=0.0,
         )
+        self.last_input_state = {}
 
-    def get_move_direction(self, input_state: InputState) -> tuple[float, float]:
+    def get_move_direction(self, input_state: dict) -> tuple[float, float]:
         if self.agent is None:
             return 0.0, 0.0
 
-        horizontal = input_state.move_x
-        vertical = input_state.move_y
+        horizontal = input_state["move_x"]
+        vertical = input_state["move_y"]
 
         magnitude = math.hypot(horizontal, vertical)
         if magnitude == 0.0:
@@ -599,10 +603,10 @@ class Player:
 
         return horizontal / magnitude, vertical / magnitude
 
-    def pick_up_or_put_down(self, input_state: InputState) -> None:
+    def pick_up_or_put_down(self, input_state: dict) -> None:
         # Check for nearby object_holders to pick up from or put down onto.
         # Priority is given to putting down over picking up, and to the first object_holders found in the list.
-        if input_state.carry:
+        if input_state["carry"]:
             for object_holder in self.level.object_holders:
                 distance = (object_holder.body.position - self.body.position).length
                 if distance <= self.radius * 3:
@@ -619,8 +623,8 @@ class Player:
                             self.held_object = None
                             return
 
-    def do_interact(self, input_state: InputState) -> None:
-        if input_state.interact:
+    def do_interact(self, input_state: dict) -> None:
+        if input_state["interact"]:
             for interactable in self.level.interactables:
                 distance = (interactable.body.position - self.body.position).length
                 if distance <= self.radius * 3:
@@ -628,6 +632,7 @@ class Player:
 
     def update(self, delta_time: float) -> None:
         input_state = self.agent.update(delta_time, create_game_state(self.level))
+        self.last_input_state = input_state
         move_x, move_y = self.get_move_direction(input_state)
         self.body.linearVelocity = (move_x * self.move_speed * delta_time, move_y * self.move_speed * delta_time)
         self.pick_up_or_put_down(input_state)
@@ -646,8 +651,10 @@ class Player:
 
 
 class Level:
-    def __init__(self, level_data: dict):
+    def __init__(self, level_data: dict, export_state: bool = False, export_every_n_frames: int = 1):
         self.level_data = level_data
+        self.export_state = export_state
+        self.export_every_n_frames = export_every_n_frames
         self.layout_objects: list[dict] = level_data.get("layout", [])
         self.player_starts: list[list] = level_data.get("player_starts", [])
         self.velocity_iterations = 8
@@ -657,6 +664,8 @@ class Level:
         self.game_objects: list[GameObject] = []
         self.interactables: list[Interactable] = []
         self.object_holders: list[ObjectHolder] = []
+        self.current_frame = 0
+        self.export_name = Path(__file__).with_name("exports").joinpath(datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".jsonl")
 
         self.camera_padding = 100
         self.camera_min_zoom = 0.05
@@ -842,6 +851,21 @@ class Level:
 
         self.world.Step(delta_time, self.velocity_iterations, self.position_iterations)
 
+        if self.export_state:
+            input_states = []
+            for player in self.players:
+                input_states.append(player.last_input_state)
+                input_states[-1]["is_human"] = isinstance(player.agent, HumanAgent)
+            state = create_game_state(self)
+            state["input_states"] = input_states
+
+            if self.current_frame % self.export_every_n_frames == 0:
+                with open(self.export_name, "a+") as f:
+                    json.dump(state, f)
+                    f.write("\n")
+
+        self.current_frame += 1
+
     def draw(self) -> None:
         rl.begin_mode_2d(self.camera)
         for game_object in self.game_objects:
@@ -887,4 +911,8 @@ def create_game_state(level: Level) -> dict:
                 state[name] = {"position": position}
                 if isinstance(game_object, Onion) or isinstance(game_object, Soup):
                     state[name]["progress"] = game_object.progress
+                if isinstance(game_object, Soup):
+                    state[name]["ingredients"] = [OBJECT_TO_NAME[type(ingredient)] for ingredient in game_object.ingredients]
+                    while len(state[name]["ingredients"]) < 3:
+                        state[name]["ingredients"].append(None)
         return state
