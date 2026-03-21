@@ -3,10 +3,7 @@ from pathlib import Path
 
 import pyray as rl
 
-try:
-    from .physics import Level, TABLETOP_SIZE, WORLD_SCALE
-except ImportError:
-    from physics import Level, TABLETOP_SIZE, WORLD_SCALE
+from game import Level, TABLETOP_SIZE, WORLD_SCALE
 
 
 WINDOW_WIDTH = 1280
