@@ -5,7 +5,6 @@ from Box2D import b2CircleShape, b2PolygonShape, b2Vec2, b2World
 
 
 WORLD_SCALE = 50.0
-OBJECT_DRAW_SIZE = WORLD_SCALE * 1.25
 TABLETOP_SIZE = b2Vec2(1.25, 1.25)
 PLAYER_RADIUS = 0.4
 PLAYER_MOVE_SPEED = 7.2
@@ -13,8 +12,8 @@ PLAYER_CONTROL_SCHEMES = (
     {"up": rl.KEY_W, "down": rl.KEY_S, "left": rl.KEY_A, "right": rl.KEY_D},
     {"up": rl.KEY_UP, "down": rl.KEY_DOWN, "left": rl.KEY_LEFT, "right": rl.KEY_RIGHT},
 )
-TABLETOP_COLOR = rl.LIGHTGRAY
-PLAYER_COLORS = (rl.MAGENTA, rl.ORANGE)
+PLAYER_COLORS = (rl.PURPLE, rl.DARKPURPLE)
+
 
 def world_to_physics(position: list[float]) -> b2Vec2:
     return b2Vec2(position[0], -position[1])
@@ -80,11 +79,11 @@ def get_composite(holder: "ObjectHolder") -> "Composite | None":
 
 
 def draw_progress_bar(position: rl.Vector2, progress: float) -> None:
-    progress_width = OBJECT_DRAW_SIZE
+    progress_width = WORLD_SCALE * 1.25
     progress_height = 5.0
     progress_rect = rl.Rectangle(
         position.x - (progress_width / 2),
-        position.y - OBJECT_DRAW_SIZE - progress_height - 2.0,
+        position.y - progress_width - progress_height - 2.0,
         progress_width * progress,
         progress_height,
     )
@@ -204,7 +203,7 @@ class Onion(Holdable):
         if self.progress == 1.0:
             color = rl.YELLOW
 
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=OBJECT_DRAW_SIZE * 0.25, color=color)
+        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.2, color=color)
 
 
 class Soup(Composite):
@@ -215,7 +214,7 @@ class Soup(Composite):
         self.ingredients = []
 
     def draw(self) -> None:
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=OBJECT_DRAW_SIZE * 0.25, color=rl.ORANGE)
+        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.2, color=rl.ORANGE)
 
     def add_ingredient(self, ingredient: Onion) -> bool:
         if len(self.ingredients) < 3:
@@ -270,7 +269,7 @@ class Tabletop(ObjectHolder):
             friction=0.0,
         )
         self.size = b2Vec2(size.x, size.y)
-        self.color = TABLETOP_COLOR
+        self.color = rl.LIGHTGRAY
 
     def draw(self) -> None:
         draw_centered_square(
@@ -367,7 +366,7 @@ class Plate(Holdable, IngredientHolder):
         self.body = level.world.CreateStaticBody()
 
     def draw(self) -> None:
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=OBJECT_DRAW_SIZE * 0.22, color=rl.WHITE)
+        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.25, color=rl.WHITE)
 
     def put_down(self, obj: GameObject) -> bool:
         # When putting down an IngredientHolder, take its contents instead.
@@ -431,7 +430,7 @@ class Pot(Holdable, IngredientHolder):
         return False
 
     def draw(self) -> None:
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=OBJECT_DRAW_SIZE * 0.28, color=rl.DARKGRAY)
+        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.3, color=rl.DARKGRAY)
 
 
 class FireExtinguisher(Holdable):
@@ -440,7 +439,7 @@ class FireExtinguisher(Holdable):
         self.body = level.world.CreateStaticBody()
 
     def draw(self) -> None:
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=OBJECT_DRAW_SIZE * 0.18, color=rl.MAROON)
+        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.2, color=rl.MAROON)
 
 
 class DeliveryStation(ObjectHolder):
@@ -666,7 +665,74 @@ class Level:
         self.interactables: list[Interactable] = []
         self.object_holders: list[ObjectHolder] = []
 
+        self.camera_padding = 100
+        self.camera_min_zoom = 0.05
+        self.camera_max_zoom = 10.0
+        self.camera_zoom_step = 0.1
+
         self.build_level()
+        self.camera = self.build_camera()
+
+    def get_screen_size(self) -> tuple[int, int]:
+        width = rl.get_screen_width()
+        height = rl.get_screen_height()
+        return width, height
+
+    def collect_world_points(self) -> list[rl.Vector2]:
+        to_world_xy = lambda position: rl.Vector2(position[0] * WORLD_SCALE, -position[1] * WORLD_SCALE)
+
+        points = [to_world_xy(layout_object.get("position", [0.0, 0.0])) for layout_object in self.layout_objects]
+        points.extend(to_world_xy(player_start) for player_start in self.player_starts)
+        return points
+
+    def build_camera(self) -> rl.Camera2D:
+        screen_width, screen_height = self.get_screen_size()
+        points = self.collect_world_points()
+        if not points:
+            return rl.Camera2D(
+                rl.Vector2(screen_width / 2, screen_height / 2),
+                rl.Vector2(0.0, 0.0),
+                0.0,
+                1.0,
+            )
+
+        min_x = min(point.x for point in points)
+        max_x = max(point.x for point in points)
+        min_y = min(point.y for point in points)
+        max_y = max(point.y for point in points)
+
+        world_width = max(max_x - min_x, WORLD_SCALE * 2.5)
+        world_height = max(max_y - min_y, WORLD_SCALE * 2.5)
+        usable_width = max(screen_width - (2 * self.camera_padding), 1)
+        usable_height = max(screen_height - (2 * self.camera_padding), 1)
+        zoom_x = usable_width / world_width
+        zoom_y = usable_height / world_height
+        zoom = max(self.camera_min_zoom, min(min(zoom_x, zoom_y), self.camera_max_zoom))
+
+        return rl.Camera2D(
+            rl.Vector2(screen_width / 2, screen_height / 2),
+            rl.Vector2((min_x + max_x) / 2, (min_y + max_y) / 2),
+            0.0,
+            zoom,
+        )
+
+    def update_camera(self) -> None:
+        screen_width, screen_height = self.get_screen_size()
+        self.camera.offset = rl.Vector2(screen_width / 2, screen_height / 2)
+
+        if rl.is_key_pressed(rl.KEY_R):
+            self.camera = self.build_camera()
+            return
+
+        wheel_move = rl.get_mouse_wheel_move()
+        if wheel_move != 0:
+            zoom_multiplier = 1.0 + (wheel_move * self.camera_zoom_step)
+            self.camera.zoom = max(self.camera_min_zoom, min(self.camera.zoom * zoom_multiplier, self.camera_max_zoom))
+
+        if rl.is_mouse_button_down(rl.MOUSE_BUTTON_MIDDLE):
+            delta = rl.get_mouse_delta()
+            self.camera.target.x -= delta.x / self.camera.zoom
+            self.camera.target.y -= delta.y / self.camera.zoom
 
     def build_level(self) -> None:
         # Create players first so they are first in the draw order.
@@ -775,6 +841,8 @@ class Level:
 
 
     def update(self, delta_time: float) -> None:
+        self.update_camera()
+
         if delta_time <= 0.0:
             return
 
@@ -784,8 +852,10 @@ class Level:
         self.world.Step(delta_time, self.velocity_iterations, self.position_iterations)
 
     def draw(self) -> None:
+        rl.begin_mode_2d(self.camera)
         for game_object in self.game_objects:
             game_object.draw()
+        rl.end_mode_2d()
 
     def remove_game_object(self, obj: GameObject) -> None:
         if obj in self.game_objects:
