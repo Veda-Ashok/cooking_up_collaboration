@@ -51,6 +51,34 @@ def draw_centered_circle(center: rl.Vector2, radius: float, color: rl.Color) -> 
     rl.draw_circle_lines(int(center.x), int(center.y), radius, rl.BLACK)
 
 
+def get_root(holder: "ObjectHolder") -> "ObjectHolder":
+    current = holder
+    while current.parent is not None:
+        current = current.parent
+    return current
+
+
+def get_leaf(holder: "ObjectHolder") -> "ObjectHolder":
+    current = holder
+    while True:
+        if isinstance(current, ObjectHolder) and current.held_object is not None and isinstance(current.held_object, ObjectHolder):
+            current = current.held_object
+        else:
+            return current
+
+
+def get_composite(holder: "ObjectHolder") -> "Composite | None":
+    current = get_root(holder)
+    while current is not None:
+        if isinstance(current, Composite):
+            return current
+        elif isinstance(current, ObjectHolder):
+            current = current.held_object
+        else:
+            return None
+    return None
+
+
 class GameObject:
     def __init__(self, level: "Level"):
         self.level: "Level" = level
@@ -67,6 +95,13 @@ class Holdable(GameObject):
     Base class for holdable objects in the game world.
     Holdable objects can be picked up and held by players, and can be put down onto object holders.
     """
+    def __init__(self, level: "Level"):
+        super().__init__(level)
+        self.parent: ObjectHolder | None = None
+    pass
+
+
+class Composite(Holdable):
     pass
 
 
@@ -78,27 +113,34 @@ class ObjectHolder(GameObject):
     def __init__(self, level: "Level"):
         super().__init__(level)
         self.held_object: Holdable | None = None
+        self.parent: ObjectHolder | None = None
 
     def update(self, delta_time: float) -> None:
         super().update(delta_time)
         if self.held_object is not None:
             self.held_object.body.position = b2Vec2(self.body.position.x, self.body.position.y)
 
-    def pick_up(self) -> Holdable | None:
-        if self.held_object is not None:
-            obj = self.held_object
-            self.held_object = None
-            return obj
-        return None
-
     def put_down(self, obj: Holdable) -> bool:
         if self.held_object is None:
             self.held_object = obj
+            obj.parent = self
             return True
-        elif isinstance(self.held_object, ObjectHolder):
-            # If the object holder is already holding something, try to put the object down onto that object.
-            return self.held_object.put_down(obj)
         return False
+
+    def pick_up(self, player: "Player") -> Holdable | None:
+        if self.held_object is not None:
+            obj = self.held_object
+            self.held_object = None
+            obj.parent = None
+            return obj
+        return None
+
+
+class IngredientHolder(ObjectHolder):
+    """
+    Base class for objects that can hold ingredients.
+    """
+    pass
 
 
 class Interactable(ObjectHolder):
@@ -131,6 +173,25 @@ class Onion(Holdable):
         draw_centered_circle(center=physics_to_world(self.body.position), radius=OBJECT_DRAW_SIZE * 0.25, color=color)
 
 
+class Soup(Composite):
+    def __init__(self, level: "Level"):
+        super().__init__(level)
+        self.body = level.world.CreateStaticBody()
+        self.state = "uncooked"
+        self.ingredients = []
+
+    def draw(self) -> None:
+        draw_centered_circle(center=physics_to_world(self.body.position), radius=OBJECT_DRAW_SIZE * 0.25, color=rl.ORANGE)
+
+    def add_ingredient(self, ingredient: Onion) -> bool:
+        if len(self.ingredients) < 3:
+            if isinstance(ingredient, Onion) and ingredient.state == "chopped":
+                self.ingredients.append(ingredient)
+                self.level.remove_game_object(ingredient)
+                return True
+        return False
+
+
 class Dispenser(ObjectHolder):
     def __init__(self, level: "Level", position: b2Vec2, held_object: GameObject | None = None):
         super().__init__(level)
@@ -150,7 +211,7 @@ class Dispenser(ObjectHolder):
             color=rl.DARKGREEN,
         )
 
-    def pick_up(self) -> Onion | None:
+    def pick_up(self, player: "Player") -> Onion | None:
         # Dispensers can never run out. Construct a new held_object and return it.
         object = None
         if isinstance(self.held_object, Onion):
@@ -234,7 +295,7 @@ class ChoppingBoard(Interactable):
             self.held_object.state = "chopped"
 
 
-class Plate(Holdable):
+class Plate(Holdable, IngredientHolder):
     def __init__(self, level: "Level"):
         super().__init__(level)
         self.body = level.world.CreateStaticBody()
@@ -242,16 +303,55 @@ class Plate(Holdable):
     def draw(self) -> None:
         draw_centered_circle(center=physics_to_world(self.body.position), radius=OBJECT_DRAW_SIZE * 0.22, color=rl.WHITE)
 
+    def put_down(self, obj: GameObject) -> bool:
+        # When putting down an IngredientHolder, take its contents instead.
+        if self.held_object is None:
+            if isinstance(obj, IngredientHolder) and obj.held_object is not None and isinstance(obj.held_object, Soup):
+                self.held_object = obj.held_object
+                self.held_object.parent = self
+                obj.held_object = None
+        elif isinstance(obj, IngredientHolder) and obj.held_object is None:
+            # When putting down an IngredientHolder that is empty, transfer our contents instead.
+            obj.held_object = self.held_object
+            obj.held_object.parent = obj
+            self.held_object = None
+            # Return False because we don't want the player to drop the IngredientHolder.
+            return False
+        # Always return False because we don't want the player to drop the IngredientHolder.
+        return False
 
-class Pot(Holdable, ObjectHolder):
+
+class Pot(Holdable, IngredientHolder):
     def __init__(self, level: "Level"):
         super().__init__(level)
         self.body = level.world.CreateStaticBody()
 
     def put_down(self, obj: GameObject) -> bool:
         # Pots can only hold cut onions.
-        if isinstance(obj, Onion) and obj.state == "chopped":
-            return super().put_down(obj)
+        if self.held_object is None:
+            if isinstance(obj, Onion) and obj.state == "chopped":
+                soup = Soup(self.level)
+                soup.add_ingredient(obj)
+                self.level.game_objects.append(soup)
+                self.held_object = soup
+                return True
+            elif isinstance(obj, IngredientHolder) and obj.held_object is not None and isinstance(obj.held_object, Soup):
+                # When putting down an IngredientHolder, take its contents instead.
+                self.held_object = obj.held_object
+                self.held_object.parent = self
+                obj.held_object = None
+                # Return False because we don't want the player to drop the IngredientHolder.
+                return False
+        elif isinstance(self.held_object, Soup):
+            if isinstance(obj, Onion) and obj.state == "chopped":
+                return self.held_object.add_ingredient(obj)
+            elif isinstance(obj, IngredientHolder) and obj.held_object is None:
+                # When putting down an IngredientHolder that is empty, transfer our contents instead.
+                obj.held_object = self.held_object
+                obj.held_object.parent = obj
+                self.held_object = None
+                # Return False because we don't want the player to drop the IngredientHolder.
+                return False
         return False
 
     def draw(self) -> None:
@@ -359,6 +459,34 @@ class Sink(Interactable):
         )
 
 
+class RubbishBin(ObjectHolder):
+    def __init__(self, level: "Level", position: b2Vec2):
+        super().__init__(level)
+        self.body = level.world.CreateStaticBody(position=position)
+        self.body.CreateFixture(
+            shape=b2PolygonShape(box=(TABLETOP_SIZE.x / 2, TABLETOP_SIZE.y / 2)),
+            density=1.0,
+            friction=0.0,
+        )
+        self.size = b2Vec2(TABLETOP_SIZE.x, TABLETOP_SIZE.y)
+
+    def draw(self) -> None:
+        draw_centered_square(
+            center=physics_to_world(self.body.position),
+            size=WORLD_SCALE * self.size.x,
+            color=rl.GREEN,
+        )
+
+    def put_down(self, obj: GameObject) -> bool:
+        # Rubbish bins can accept ingredients.
+        if isinstance(obj, Onion):
+            # Remove the object from the level's game_objects list so that it no longer gets updated or drawn.
+            if obj in self.level.game_objects:
+                self.level.game_objects.remove(obj)
+            return True
+        return False
+
+
 class Player:
     def __init__(
         self,
@@ -405,23 +533,25 @@ class Player:
 
         return horizontal / magnitude, vertical / magnitude
 
-    def pick_up_or_put_down(self) -> GameObject | None:
+    def pick_up_or_put_down(self):
         # Check for nearby object_holders to pick up from or put down onto.
         # Priority is given to putting down over picking up, and to the first object_holders found in the list.
         if rl.is_key_pressed(rl.KEY_SPACE):
             for object_holder in self.level.object_holders:
                 distance = (object_holder.body.position - self.body.position).length
                 if distance <= self.radius * 3:
-                    if self.held_object is not None:
-                        if object_holder.put_down(self.held_object):
-                            self.held_object = None
-                            return None
+                    if self.held_object is None:
+                        # When picking up we find the root.
+                        root = get_root(object_holder)
+                        if root.held_object is not None:
+                            self.held_object = root.pick_up(self)
+                            return
                     else:
-                        obj = object_holder.pick_up()
-                        if obj is not None:
-                            self.held_object = obj
-                            return obj
-        return self.held_object
+                        # When putting down we find the leaf.
+                        leaf = get_leaf(object_holder)
+                        if leaf.put_down(self.held_object):
+                            self.held_object = None
+                            return
 
     def do_interact(self) -> None:
         if rl.is_key_pressed(rl.KEY_LEFT_CONTROL):
@@ -518,6 +648,10 @@ class Level:
                 self.game_objects.append(Sink(level=self, position=position))
                 continue
 
+            if object_type == "rubbish_bin":
+                self.game_objects.append(RubbishBin(level=self, position=position))
+                continue
+
 
         # If a PlateReturn and DryingRack exist at the same position, destroy the PlateReturn.
         for i in range(len(self.game_objects)):
@@ -577,3 +711,7 @@ class Level:
     def draw(self) -> None:
         for game_object in self.game_objects:
             game_object.draw()
+
+    def remove_game_object(self, obj: GameObject) -> None:
+        if obj in self.game_objects:
+            self.game_objects.remove(obj)

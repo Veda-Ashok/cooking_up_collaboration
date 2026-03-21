@@ -284,6 +284,7 @@ namespace ExtractionMod
             RefreshObjects<PickupItemSpawner>(); // Dispenser crates
             RefreshObjects<AttachStation>(); // TableTops DryingPart (clean plates), PlateStation, and chopping boards.
             RefreshObjects<Interactable>(); // Fire extinguisher, WashPart (sink), and chopping boards.
+            RefreshObjects<RubbishBin>(); // Rubbish bins, they're British!
             RefreshOrderControllers();
             LogPickupItemSpawnerDetails();
             Logger.LogInfo($"ExtractionMod: Found {GetAllIngredients().Length} tagged ingredient GameObjects.");
@@ -292,7 +293,7 @@ namespace ExtractionMod
             // RefreshObjects<Workstation>(); // Cutting board. Included in AttachStation.
             // RefreshObjects<PlacementContainer>(); // The same as IngredientContainer.
             // RefreshObjects<CookingStation>(); // Stove. Included in AttachStation.
-            // RefreshObjects<PickupItemSpawner>(); // Dispenser Crate. Included in AttachStation.
+            // RefreshObjects<PickupItemSpawner>(); // Dispenser crates. Included in AttacheStation.
         }
 
         private GameObject[] GetAllIngredients()
@@ -343,6 +344,7 @@ namespace ExtractionMod
             AppendLayoutObjects<Interactable>(layoutObjects);
             AppendLayoutObjects<IngredientContainer>(layoutObjects);
             AppendLayoutObjects<PlateReturnStation>(layoutObjects);
+            AppendLayoutObjects<RubbishBin>(layoutObjects);
 
             Logger.LogInfo($"ExtractionMod: Built {layoutObjects.Count} layout objects for export.");
             return layoutObjects;
@@ -484,6 +486,11 @@ namespace ExtractionMod
             if (obj is PlateReturnStation)
             {
                 return "plate_return_station";
+            }
+
+            if (obj is RubbishBin)
+            {
+                return "rubbish_bin";
             }
 
             return obj.GetType().Name;
