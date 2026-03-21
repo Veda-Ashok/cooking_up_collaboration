@@ -2,13 +2,11 @@ import math
 import pyray as rl
 
 from Box2D import b2CircleShape, b2PolygonShape, b2Vec2, b2World
-from ravioli.agents.base import Agent, InputState
-from ravioli.agents.human import HumanAgent
+from ravioli.agents import RandomAgent, HumanAgent, Agent, InputState
 
 
 WORLD_SCALE = 50.0
 TABLETOP_SIZE = b2Vec2(1.25, 1.25)
-PLAYER_COLORS = (rl.PURPLE, rl.DARKPURPLE)
 
 
 def world_to_physics(position: list[float]) -> b2Vec2:
@@ -641,7 +639,8 @@ class Player:
     def draw(self) -> None:
         player_draw_radius = WORLD_SCALE * self.radius
         world_xy = physics_to_screen(self.body.position)
-        player_color = PLAYER_COLORS[self.player_num % len(PLAYER_COLORS)]
+        player_colors = (rl.PURPLE, rl.DARKPURPLE)
+        player_color = player_colors[self.player_num % len(player_colors)]
         rl.draw_circle_v(world_xy, player_draw_radius, player_color)
         rl.draw_circle_lines(int(world_xy.x), int(world_xy.y), player_draw_radius, rl.BLACK)
 
@@ -733,7 +732,7 @@ class Level:
         for player_num, player_start in enumerate(self.player_starts):
 
             position = world_to_physics(player_start)
-            agent = HumanAgent(player_num)
+            agent = HumanAgent(player_num) if player_num == 0 else RandomAgent(player_num)
             player = Player(
                 player_num=player_num,
                 level=self,
@@ -876,14 +875,16 @@ NAME_TO_OBJECT = {v: k for k, v in OBJECT_TO_NAME.items()}
 
 
 def create_game_state(level: Level) -> dict:
-        state: dict[str, list[int, int]] = {}
+        state: dict[str, dict[str, float]] = {}
         for player in level.players:
             name = f"player_{player.player_num}"
             position = physics_to_world(player.body.position)
-            state[name] = position
+            state[name] = {"position": position}
         for game_object in level.game_objects:
             if not isinstance(game_object, Player):
                 name = OBJECT_TO_NAME[type(game_object)]
                 position = physics_to_world(game_object.body.position)
-                state[name] = position
+                state[name] = {"position": position}
+                if isinstance(game_object, Onion) or isinstance(game_object, Soup):
+                    state[name]["progress"] = game_object.progress
         return state

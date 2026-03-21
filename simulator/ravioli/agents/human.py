@@ -1,6 +1,6 @@
 import pyray as rl
 
-from ravioli.agents.base import Agent, InputState
+from ravioli.agents import Agent, InputState
 
 class HumanAgent(Agent):
     def update(self, delta_time: float, state: dict) -> InputState:

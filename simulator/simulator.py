@@ -1,8 +1,7 @@
 import json
-from pathlib import Path
-
 import pyray as rl
 
+from pathlib import Path
 from ravioli.game import Level
 
 
