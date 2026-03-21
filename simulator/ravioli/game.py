@@ -2,16 +2,12 @@ import math
 import pyray as rl
 
 from Box2D import b2CircleShape, b2PolygonShape, b2Vec2, b2World
+from ravioli.agents.base import Agent, InputState
+from ravioli.agents.human import HumanAgent
 
 
 WORLD_SCALE = 50.0
 TABLETOP_SIZE = b2Vec2(1.25, 1.25)
-PLAYER_RADIUS = 0.4
-PLAYER_MOVE_SPEED = 7.2
-PLAYER_CONTROL_SCHEMES = (
-    {"up": rl.KEY_W, "down": rl.KEY_S, "left": rl.KEY_A, "right": rl.KEY_D},
-    {"up": rl.KEY_UP, "down": rl.KEY_DOWN, "left": rl.KEY_LEFT, "right": rl.KEY_RIGHT},
-)
 PLAYER_COLORS = (rl.PURPLE, rl.DARKPURPLE)
 
 
@@ -19,7 +15,11 @@ def world_to_physics(position: list[float]) -> b2Vec2:
     return b2Vec2(position[0], -position[1])
 
 
-def physics_to_world(position: b2Vec2) -> rl.Vector2:
+def physics_to_world(position: b2Vec2) -> list[float]:
+    return [position.x, -position.y]
+
+
+def physics_to_screen(position: b2Vec2) -> rl.Vector2:
     return rl.Vector2(position.x * WORLD_SCALE, position.y * WORLD_SCALE)
 
 
@@ -203,7 +203,7 @@ class Onion(Holdable):
         if self.progress == 1.0:
             color = rl.YELLOW
 
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.2, color=color)
+        draw_centered_circle(center=physics_to_screen(self.body.position), radius=WORLD_SCALE * 0.2, color=color)
 
 
 class Soup(Composite):
@@ -214,7 +214,7 @@ class Soup(Composite):
         self.ingredients = []
 
     def draw(self) -> None:
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.2, color=rl.ORANGE)
+        draw_centered_circle(center=physics_to_screen(self.body.position), radius=WORLD_SCALE * 0.2, color=rl.ORANGE)
 
     def add_ingredient(self, ingredient: Onion) -> bool:
         if len(self.ingredients) < 3:
@@ -239,7 +239,7 @@ class Dispenser(ObjectHolder):
 
     def draw(self) -> None:
         draw_centered_square(
-            center=physics_to_world(self.body.position),
+            center=physics_to_screen(self.body.position),
             size=WORLD_SCALE * TABLETOP_SIZE.x,
             color=rl.DARKGREEN,
         )
@@ -273,7 +273,7 @@ class Tabletop(ObjectHolder):
 
     def draw(self) -> None:
         draw_centered_square(
-            center=physics_to_world(self.body.position),
+            center=physics_to_screen(self.body.position),
             size=WORLD_SCALE * self.size.x,
             color=self.color,
         )
@@ -301,12 +301,12 @@ class Stove(Interactable):
 
     def draw(self) -> None:
         draw_centered_square(
-            center=physics_to_world(self.body.position),
+            center=physics_to_screen(self.body.position),
             size=WORLD_SCALE * self.size.x,
             color=self.color,
         )
         if self.held_object is not None and isinstance(self.held_object, Pot) and isinstance(self.held_object.held_object, Soup):
-            draw_progress_bar(physics_to_world(self.body.position), self.progress)
+            draw_progress_bar(physics_to_screen(self.body.position), self.progress)
 
     def interact(self) -> None:
         # Stove is always on.
@@ -348,12 +348,12 @@ class ChoppingBoard(Interactable):
 
     def draw(self) -> None:
         draw_centered_square(
-            center=physics_to_world(self.body.position),
+            center=physics_to_screen(self.body.position),
             size=WORLD_SCALE * self.size.x,
             color=self.color,
         )
         if self.held_object is not None and isinstance(self.held_object, Onion):
-            draw_progress_bar(physics_to_world(self.body.position), self.progress)
+            draw_progress_bar(physics_to_screen(self.body.position), self.progress)
 
     def interact(self) -> None:
         if isinstance(self.held_object, Onion):
@@ -366,7 +366,7 @@ class Plate(Holdable, IngredientHolder):
         self.body = level.world.CreateStaticBody()
 
     def draw(self) -> None:
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.25, color=rl.WHITE)
+        draw_centered_circle(center=physics_to_screen(self.body.position), radius=WORLD_SCALE * 0.25, color=rl.WHITE)
 
     def put_down(self, obj: GameObject) -> bool:
         # When putting down an IngredientHolder, take its contents instead.
@@ -430,7 +430,7 @@ class Pot(Holdable, IngredientHolder):
         return False
 
     def draw(self) -> None:
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.3, color=rl.DARKGRAY)
+        draw_centered_circle(center=physics_to_screen(self.body.position), radius=WORLD_SCALE * 0.3, color=rl.DARKGRAY)
 
 
 class FireExtinguisher(Holdable):
@@ -439,7 +439,7 @@ class FireExtinguisher(Holdable):
         self.body = level.world.CreateStaticBody()
 
     def draw(self) -> None:
-        draw_centered_circle(center=physics_to_world(self.body.position), radius=WORLD_SCALE * 0.2, color=rl.MAROON)
+        draw_centered_circle(center=physics_to_screen(self.body.position), radius=WORLD_SCALE * 0.2, color=rl.MAROON)
 
 
 class DeliveryStation(ObjectHolder):
@@ -456,7 +456,7 @@ class DeliveryStation(ObjectHolder):
 
     def draw(self) -> None:
         draw_centered_rectangle(
-            center=physics_to_world(self.body.position),
+            center=physics_to_screen(self.body.position),
             width=WORLD_SCALE * self.size.x,
             height=WORLD_SCALE * self.size.y,
             color=self.color,
@@ -487,7 +487,7 @@ class PlateReturnStation(ObjectHolder):
 
     def draw(self) -> None:
         draw_centered_square(
-            center=physics_to_world(self.body.position),
+            center=physics_to_screen(self.body.position),
             size=WORLD_SCALE * self.size.x,
             color=self.color,
         )
@@ -507,7 +507,7 @@ class DryingRack(ObjectHolder):
 
     def draw(self) -> None:
         draw_centered_square(
-            center=physics_to_world(self.body.position),
+            center=physics_to_screen(self.body.position),
             size=WORLD_SCALE * self.size.x,
             color=self.color,
         )
@@ -527,7 +527,7 @@ class Sink(Interactable):
 
     def draw(self) -> None:
         draw_centered_square(
-            center=physics_to_world(self.body.position),
+            center=physics_to_screen(self.body.position),
             size=WORLD_SCALE * self.size.x,
             color=self.color,
         )
@@ -546,7 +546,7 @@ class RubbishBin(ObjectHolder):
 
     def draw(self) -> None:
         draw_centered_square(
-            center=physics_to_world(self.body.position),
+            center=physics_to_screen(self.body.position),
             size=WORLD_SCALE * self.size.x,
             color=rl.GREEN,
         )
@@ -567,14 +567,12 @@ class Player:
         player_num: int,
         level: "Level",
         position: b2Vec2,
-        radius: float = PLAYER_RADIUS,
-        move_speed: float = PLAYER_MOVE_SPEED,
-        controls: dict | None = None,
+        agent: Agent | None = None,
     ):
         self.player_num = player_num
-        self.radius = radius
-        self.move_speed = move_speed
-        self.controls = controls
+        self.radius = 0.4
+        self.move_speed = 7.2
+        self.agent = agent
         self.level = level
         self.held_object: GameObject | None = None
         self.body = level.world.CreateDynamicBody(
@@ -584,22 +582,18 @@ class Player:
             allowSleep=False,
         )
         self.body.CreateFixture(
-            shape=b2CircleShape(radius=radius),
+            shape=b2CircleShape(radius=self.radius),
             density=1.0,
             friction=0.0,
             restitution=0.0,
         )
 
-    def get_move_direction(self) -> tuple[float, float]:
-        if self.controls is None:
+    def get_move_direction(self, input_state: InputState) -> tuple[float, float]:
+        if self.agent is None:
             return 0.0, 0.0
 
-        horizontal = float(rl.is_key_down(self.controls["right"])) - float(
-            rl.is_key_down(self.controls["left"])
-        )
-        vertical = float(rl.is_key_down(self.controls["down"])) - float(
-            rl.is_key_down(self.controls["up"])
-        )
+        horizontal = input_state.move_x
+        vertical = input_state.move_y
 
         magnitude = math.hypot(horizontal, vertical)
         if magnitude == 0.0:
@@ -607,10 +601,10 @@ class Player:
 
         return horizontal / magnitude, vertical / magnitude
 
-    def pick_up_or_put_down(self):
+    def pick_up_or_put_down(self, input_state: InputState) -> None:
         # Check for nearby object_holders to pick up from or put down onto.
         # Priority is given to putting down over picking up, and to the first object_holders found in the list.
-        if rl.is_key_pressed(rl.KEY_SPACE):
+        if input_state.carry:
             for object_holder in self.level.object_holders:
                 distance = (object_holder.body.position - self.body.position).length
                 if distance <= self.radius * 3:
@@ -627,26 +621,27 @@ class Player:
                             self.held_object = None
                             return
 
-    def do_interact(self) -> None:
-        if rl.is_key_pressed(rl.KEY_LEFT_CONTROL):
+    def do_interact(self, input_state: InputState) -> None:
+        if input_state.interact:
             for interactable in self.level.interactables:
                 distance = (interactable.body.position - self.body.position).length
                 if distance <= self.radius * 3:
                     interactable.interact()
 
     def update(self, delta_time: float) -> None:
-        del delta_time
-        move_x, move_y = self.get_move_direction()
+        if self.agent is not None:
+            input_state = self.agent.update(delta_time, create_game_state(self.level))
+        move_x, move_y = self.get_move_direction(input_state)
         self.body.linearVelocity = (move_x * self.move_speed, move_y * self.move_speed)
-        self.pick_up_or_put_down()
-        self.do_interact()
+        self.pick_up_or_put_down(input_state)
+        self.do_interact(input_state)
         if self.held_object is not None:
             # If the player is holding an object, update its position to match the player's position.
             self.held_object.body.position = b2Vec2(self.body.position.x, self.body.position.y)
 
     def draw(self) -> None:
         player_draw_radius = WORLD_SCALE * self.radius
-        world_xy = physics_to_world(self.body.position)
+        world_xy = physics_to_screen(self.body.position)
         player_color = PLAYER_COLORS[self.player_num % len(PLAYER_COLORS)]
         rl.draw_circle_v(world_xy, player_draw_radius, player_color)
         rl.draw_circle_lines(int(world_xy.x), int(world_xy.y), player_draw_radius, rl.BLACK)
@@ -737,22 +732,20 @@ class Level:
     def build_level(self) -> None:
         # Create players first so they are first in the draw order.
         for player_num, player_start in enumerate(self.player_starts):
-            controls = None
-            if player_num < len(PLAYER_CONTROL_SCHEMES):
-                controls = PLAYER_CONTROL_SCHEMES[player_num]
 
             position = world_to_physics(player_start)
+            agent = HumanAgent(player_num)
             player = Player(
                 player_num=player_num,
                 level=self,
                 position=position,
-                controls=controls,
+                agent=agent,
             )
             self.players.append(player)
             self.game_objects.append(player)
 
         for layout_object in self.layout_objects:
-            object_type = layout_object.get("type", layout_object.get("category"))
+            object_type = layout_object.get("type")
             position = world_to_physics(layout_object.get("position", [0.0, 0.0]))
             if object_type == "tabletop":
                 self.game_objects.append(Tabletop(level=self, position=position))
@@ -860,3 +853,38 @@ class Level:
     def remove_game_object(self, obj: GameObject) -> None:
         if obj in self.game_objects:
             self.game_objects.remove(obj)
+
+
+OBJECT_TO_NAME = {
+    Tabletop: "tabletop",
+    Dispenser: "dispenser",
+    ChoppingBoard: "chopping_board",
+    Stove: "stove",
+    DeliveryStation: "delivery_station",
+    PlateReturnStation: "plate_return_station",
+    DryingRack: "drying_rack",
+    Sink: "sink",
+    RubbishBin: "rubbish_bin",
+    FireExtinguisher: "fire_extinguisher",
+    Plate: "plate",
+    Pot: "pot",
+    Soup: "soup",
+    Onion: "onion",
+}
+
+
+NAME_TO_OBJECT = {v: k for k, v in OBJECT_TO_NAME.items()}
+
+
+def create_game_state(level: Level) -> dict:
+        state: dict[str, list[int, int]] = {}
+        for player in level.players:
+            name = f"player_{player.player_num}"
+            position = physics_to_world(player.body.position)
+            state[name] = position
+        for game_object in level.game_objects:
+            if not isinstance(game_object, Player):
+                name = OBJECT_TO_NAME[type(game_object)]
+                position = physics_to_world(game_object.body.position)
+                state[name] = position
+        return state

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pyray as rl
 
-from game import Level
+from ravioli.game import Level
 
 
 WINDOW_WIDTH = 1280
