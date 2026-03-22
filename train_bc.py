@@ -23,29 +23,35 @@ def _resolve_device(device_arg: str) -> str:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Behavior Cloning training for Overcooked CSV trajectories")
 
-    parser.add_argument("--data-csv", type=str, default="data/2019_hh_trials.csv")
-    parser.add_argument("--model", type=str, choices=["lstm", "mlp"], default="lstm")
+    parser.add_argument("--data-csv", type=str, default="data/2019_hh_trials_plus_local.csv")
+    parser.add_argument("--model", type=str, choices=["lstm", "mlp"], default="mlp")
     parser.add_argument("--player-mode", type=str, choices=["both", "single"], default="both")
     parser.add_argument("--player-idx", type=int, default=None, choices=[0, 1])
-    parser.add_argument("--train-ratio", type=float, default=0.8)
-    parser.add_argument("--val-ratio", type=float, default=0.1)
+    parser.add_argument("--layout-name", type=str, default="cramped_room",
+                        help="Train on a single layout only (e.g. cramped_room)")
+    parser.add_argument("--train-ratio", type=float, default=0.85)
+    parser.add_argument("--val-ratio", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
 
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=1e-5)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
 
     parser.add_argument("--seq-len", type=int, default=20)
-    parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--hidden-dim", type=int, default=128)  # LSTM hidden dims
     parser.add_argument("--num-layers", type=int, default=1)
-    parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--mlp-hidden", type=str, default="256,128")
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--mlp-hidden", type=str, default="64,64")
 
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--early-stop-patience", type=int, default=5)
+    parser.add_argument("--early-stop-patience", type=int, default=10)
+
+    parser.add_argument("--min-episode-steps", type=int, default=800)
+    parser.add_argument("--min-total-reward", type=float, default=80)
+    parser.add_argument("--save-every-epoch", action="store_true")
 
     parser.add_argument("--outdir", type=str, default="trained_models/bc")
     parser.add_argument("--run-name", type=str, default=None)
@@ -57,8 +63,8 @@ def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    if args.train_ratio + args.val_ratio >= 1.0:
-        raise ValueError("train_ratio + val_ratio must be < 1.0")
+    if args.train_ratio + args.val_ratio > 1.0:
+        raise ValueError("train_ratio + val_ratio must be <= 1.0")
 
     if args.seq_len <= 0:
         raise ValueError("seq_len must be > 0")
@@ -95,6 +101,10 @@ def main() -> None:
         mlp_hidden=_parse_hidden_dims(args.mlp_hidden),
         grad_clip=args.grad_clip,
         early_stop_patience=args.early_stop_patience,
+        layout_name=args.layout_name,
+        min_episode_steps=args.min_episode_steps,
+        min_total_reward=args.min_total_reward,
+        save_every_epoch=args.save_every_epoch,
     )
 
     run_dir = run_training(config)

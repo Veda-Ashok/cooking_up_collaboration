@@ -22,6 +22,7 @@ from rl.sampling_utils import (
     normalize_sampling_mode,
     validate_sampling_temperature,
 )
+from imitation.models.mlp import MLPPolicy
 
 
 def _parse_args() -> argparse.Namespace:
@@ -41,6 +42,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--sampling-mode", type=str, choices=["sample", "argmax"], default="sample")
     parser.add_argument("--sampling-temperature", type=float, default=1.3)
     parser.add_argument("--device", type=str, choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument("--obs-mode", type=str, choices=["featurized", "lossless", "auto"],
+                        default="auto", help="Observation mode for the RL learner (auto reads train_config.json)")
 
     parser.add_argument("--bc-hidden-dim", type=int, default=128)
     parser.add_argument("--bc-num-layers", type=int, default=1)
@@ -81,19 +84,31 @@ def _resolve_checkpoint_and_algo(args: argparse.Namespace) -> tuple[Path, str, d
     return checkpoint_path, algo, {}
 
 
-def _try_infer_partner_checkpoint(checkpoint_path: Path) -> str | None:
+def _load_train_config(checkpoint_path: Path) -> dict:
     config_path = checkpoint_path.parent / "train_config.json"
     if not config_path.exists():
-        return None
+        return {}
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        partner_paths = config.get("partner_checkpoints", [])
-        if partner_paths:
-            return str(partner_paths[0])
+            return json.load(f)
     except Exception:
-        return None
+        return {}
+
+
+def _try_infer_partner_checkpoint(checkpoint_path: Path) -> str | None:
+    config = _load_train_config(checkpoint_path)
+    partner_paths = config.get("partner_checkpoints", [])
+    if partner_paths:
+        return str(partner_paths[0])
+    bc_ckpt = config.get("bc_checkpoint")
+    if bc_ckpt:
+        return str(bc_ckpt)
     return None
+
+
+def _infer_obs_mode(checkpoint_path: Path) -> str:
+    config = _load_train_config(checkpoint_path)
+    return config.get("obs_mode", "featurized")
 
 
 def _load_model(checkpoint_path: Path, algo: str, device: str):
@@ -110,6 +125,55 @@ def _load_model(checkpoint_path: Path, algo: str, device: str):
     else:
         raise ValueError(f"Unsupported algo={algo}")
     return model, is_recurrent
+
+
+def _load_bc_partner(
+    checkpoint_path: str,
+    input_dim: int,
+    num_actions: int,
+    bc_hidden_dim: int,
+    bc_num_layers: int,
+    bc_dropout: float,
+    device: str,
+) -> torch.nn.Module:
+    """Load a BC partner, auto-detecting MLP vs LSTM from config.json."""
+    import json as _json
+
+    config_candidate = Path(checkpoint_path).parent / "config.json"
+    model_type = "lstm"
+    mlp_hidden = [256, 128]
+    dropout = bc_dropout
+
+    if config_candidate.exists():
+        with open(config_candidate, "r", encoding="utf-8") as f:
+            cfg = _json.load(f)
+        model_type = cfg.get("model", "lstm")
+        mlp_hidden = cfg.get("mlp_hidden", mlp_hidden)
+        dropout = cfg.get("dropout", dropout)
+
+    if model_type == "mlp":
+        from rl.bc_init_utils import load_checkpoint_state_dict
+        state_dict = load_checkpoint_state_dict(checkpoint_path, map_location=device)
+        partner = MLPPolicy(
+            input_dim=input_dim,
+            num_actions=num_actions,
+            hidden_dims=list(mlp_hidden),
+            dropout=dropout,
+        )
+        partner.load_state_dict(state_dict)
+        partner.to(device)
+        partner.eval()
+        return partner
+
+    return load_lstm_policy_from_checkpoint(
+        checkpoint_path=checkpoint_path,
+        input_dim=input_dim,
+        num_actions=num_actions,
+        default_hidden_dim=bc_hidden_dim,
+        default_num_layers=bc_num_layers,
+        dropout=bc_dropout,
+        device=device,
+    )
 
 
 def _render_frame(visualizer: StateVisualizer, env: OvercookedRLWrapper, step: int, score: float, reward: float) -> np.ndarray:
@@ -143,24 +207,39 @@ def main() -> None:
     else:
         sampling_temperature = validate_sampling_temperature(manifest.get("sampling_temperature", 1.0))
 
+    obs_mode = args.obs_mode
+    if obs_mode == "auto":
+        obs_mode = _infer_obs_mode(checkpoint_path)
+    print(f"[live_rollout] obs_mode={obs_mode}")
+
     env = OvercookedRLWrapper(
         layout_name=args.layout,
         planner_cache_dir=args.planner_cache_dir,
         seq_len=args.seq_len,
         reward_shaping_coef=0.0,
+        obs_mode=obs_mode,
+        partner_obs_mode="featurized",
     )
+
+    # Get featurized input dim for the BC partner (always 96-D regardless of learner obs mode)
+    if obs_mode != "featurized":
+        dummy_state = env.mdp.get_standard_start_state()
+        bc_input_dim = len(env.mdp.featurize_state(dummy_state, env.mlam)[0])
+    else:
+        bc_input_dim = int(env.observation_space.shape[0])
+    num_actions = int(env.action_space.n)
 
     partner_checkpoint = args.partner_checkpoint or _try_infer_partner_checkpoint(checkpoint_path)
     if partner_checkpoint:
         if not Path(partner_checkpoint).exists():
             raise FileNotFoundError(f"Partner checkpoint not found: {partner_checkpoint}")
-        env.gym_partner = load_lstm_policy_from_checkpoint(
+        env.gym_partner = _load_bc_partner(
             checkpoint_path=partner_checkpoint,
-            input_dim=int(env.observation_space.shape[0]),
-            num_actions=int(env.action_space.n),
-            default_hidden_dim=args.bc_hidden_dim,
-            default_num_layers=args.bc_num_layers,
-            dropout=args.bc_dropout,
+            input_dim=bc_input_dim,
+            num_actions=num_actions,
+            bc_hidden_dim=args.bc_hidden_dim,
+            bc_num_layers=args.bc_num_layers,
+            bc_dropout=args.bc_dropout,
             device="cpu",
         )
 

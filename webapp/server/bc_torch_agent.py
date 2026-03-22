@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import random
 from collections import deque
 from typing import Any
 
@@ -94,7 +95,7 @@ class TorchBCAgent:
             raise ValueError(
                 f"sampling_temperature must be > 0 for {self.agent_dir}, got {self.sampling_temperature}"
             )
-        self.deadlock_break_after = int(self.manifest.get("deadlock_break_after", 0))
+        self.deadlock_break_after = int(self.manifest.get("deadlock_break_after", 3))
         if self.deadlock_break_after < 0:
             self.deadlock_break_after = 0
 
@@ -232,31 +233,29 @@ class TorchBCAgent:
                 LOGGER.exception("Failed to initialize mlam for BC torch agent (%s).", self.agent_dir)
 
     def reset(self) -> None:
+        LOGGER.debug("Resetting BC agent %s (clearing LSTM history/stuck state).", os.path.basename(self.agent_dir))
         self._history.clear()
         self._last_feature = None
         self._stuck_count = 0
 
-    # Optional fallback for deterministic argmax inference.
+    _UNSTICK_ACTIONS = [0, 1, 2, 3, 5]  # UP, DOWN, RIGHT, LEFT, INTERACT
+
     def _maybe_break_deadlock(self, action_idx: int, logits: torch.Tensor, feature: np.ndarray) -> int:
-        if self.sampling_mode != "argmax":
-            return action_idx
         if self.deadlock_break_after <= 0:
-            return action_idx
-        if action_idx != 4:
-            self._stuck_count = 0
             return action_idx
         if self._last_feature is not None and np.array_equal(feature, self._last_feature):
             self._stuck_count += 1
         else:
             self._stuck_count = 0
-        if self._stuck_count < self.deadlock_break_after:
-            return action_idx
-
-        non_stay_indices = torch.tensor([0, 1, 2, 3, 5], device=logits.device)
-        non_stay_logits = logits.index_select(dim=1, index=non_stay_indices)
-        best_non_stay_local = int(torch.argmax(non_stay_logits, dim=1).item())
-        self._stuck_count = 0
-        return int(non_stay_indices[best_non_stay_local].item())
+        if self._stuck_count >= self.deadlock_break_after:
+            LOGGER.info(
+                "BC agent %s stuck for %d steps -- forcing random non-STAY action.",
+                os.path.basename(self.agent_dir),
+                self._stuck_count,
+            )
+            self._stuck_count = 0
+            return random.choice(self._UNSTICK_ACTIONS)
+        return action_idx
 
     def _select_action_idx(self, logits: torch.Tensor) -> int:
         if self.sampling_mode == "argmax":
@@ -295,10 +294,13 @@ class TorchBCAgent:
             logits = self.model(x)
         else:
             self._history.append(feature)
-            if len(self._history) == 1:
-                while len(self._history) < self.seq_len:
-                    self._history.append(feature)
-            x_seq = np.stack(list(self._history), axis=0).astype(np.float32)
+            if len(self._history) < self.seq_len:
+                pad_count = self.seq_len - len(self._history)
+                zero_pad = np.zeros_like(feature)
+                padded = [zero_pad] * pad_count + list(self._history)
+            else:
+                padded = list(self._history)
+            x_seq = np.stack(padded, axis=0).astype(np.float32)
             x = torch.from_numpy(x_seq).unsqueeze(0).to(self.device)
             logits = self.model(x)
         pred_idx = self._select_action_idx(logits)
@@ -310,10 +312,12 @@ class TorchBCAgent:
         layout = self._layout_name
         if self.supported_layouts and layout not in self.supported_layouts:
             if layout not in self._warned_layouts:
-                LOGGER.warning(
-                    "BC torch agent %s got unsupported layout=%s. Returning STAY.",
+                LOGGER.error(
+                    "BC torch agent %s does NOT support layout=%s (supported: %s). "
+                    "Returning STAY but this agent will be useless.",
                     os.path.basename(self.agent_dir),
                     layout,
+                    self.supported_layouts,
                 )
                 self._warned_layouts.add(layout)
             return Action.STAY, None

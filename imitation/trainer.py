@@ -14,6 +14,7 @@ from imitation.models import LSTMPolicy, MLPPolicy
 from imitation.preprocessing import (
     build_trial_records,
     featurize_trials_with_overcooked,
+    filter_trials,
     load_csv_rows,
     split_by_trial_id,
 )
@@ -44,6 +45,10 @@ class BCConfig:
     mlp_hidden: list[int]
     grad_clip: float
     early_stop_patience: int
+    layout_name: str | None = None
+    min_episode_steps: int = 0
+    min_total_reward: float = -1e9
+    save_every_epoch: bool = False
 
 
 def _set_seed(seed: int) -> None:
@@ -200,6 +205,18 @@ def run_training(config: BCConfig) -> Path:
     if not cleaned_trials:
         raise RuntimeError("No valid trials found after CSV cleaning")
 
+    cleaned_trials = filter_trials(
+        cleaned_trials,
+        layout_name=config.layout_name,
+        min_episode_steps=config.min_episode_steps,
+        min_total_reward=config.min_total_reward,
+    )
+    if not cleaned_trials:
+        raise RuntimeError(
+            f"No trials left after filtering (layout={config.layout_name}, "
+            f"min_steps={config.min_episode_steps}, min_reward={config.min_total_reward})"
+        )
+
     featurized_trials, feat_report = featurize_trials_with_overcooked(
         cleaned_trials,
         player_mode=config.player_mode,
@@ -216,9 +233,9 @@ def run_training(config: BCConfig) -> Path:
         seed=config.seed,
     )
 
-    if not train_trials or not val_trials or not test_trials:
+    if not train_trials or not val_trials:
         raise RuntimeError(
-            "One or more data splits are empty after split_by_trial_id. "
+            "Train or val split is empty after split_by_trial_id. "
             "Adjust train_ratio/val_ratio or inspect preprocessing filters."
         )
 
@@ -240,12 +257,11 @@ def run_training(config: BCConfig) -> Path:
     device = torch.device(config.device)
     model.to(device)
 
-    class_weights = _compute_class_weights(datasets["train"].targets_np, num_classes=num_actions).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
 
     history = []
-    best_val_macro_f1 = -1.0
+    best_val_loss = float("inf")
     best_epoch = 0
     no_improve = 0
     best_path = run_dir / "best.pt"
@@ -281,13 +297,24 @@ def run_training(config: BCConfig) -> Path:
         print(
             f"Epoch {epoch:03d} | "
             f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-            f"train_macro_f1={train_metrics['macro_f1']:.4f} "
-            f"val_macro_f1={val_metrics['macro_f1']:.4f}"
+            f"train_acc={train_metrics['accuracy']:.4f} "
+            f"val_acc={val_metrics['accuracy']:.4f}"
         )
 
-        current_macro_f1 = float(val_metrics["macro_f1"])
-        if current_macro_f1 > best_val_macro_f1:
-            best_val_macro_f1 = current_macro_f1
+        if config.save_every_epoch:
+            save_checkpoint(
+                run_dir / f"epoch_{epoch:03d}.pt",
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_metrics": val_metrics,
+                },
+            )
+
+        current_val_loss = float(val_loss)
+        if current_val_loss < best_val_loss:
+            best_val_loss = current_val_loss
             best_epoch = epoch
             no_improve = 0
             save_checkpoint(
@@ -318,15 +345,9 @@ def run_training(config: BCConfig) -> Path:
     best_checkpoint = torch.load(best_path, map_location=device)
     model.load_state_dict(best_checkpoint["model_state_dict"])
 
-    best_val_loss, best_val_metrics, best_val_y_true, best_val_y_pred = evaluate(
+    best_val_loss_final, best_val_metrics, best_val_y_true, best_val_y_pred = evaluate(
         model=model,
         dataloader=dataloaders["val"],
-        criterion=criterion,
-        device=device,
-    )
-    test_loss, test_metrics, test_y_true, test_y_pred = evaluate(
-        model=model,
-        dataloader=dataloaders["test"],
         criterion=criterion,
         device=device,
     )
@@ -336,14 +357,16 @@ def run_training(config: BCConfig) -> Path:
         slot_ids=np.asarray(datasets["val"].slot_ids_np, dtype=np.int64),
         num_actions=num_actions,
     )
-    test_metrics_by_slot = _compute_metrics_by_slot(
-        y_true=test_y_true,
-        y_pred=test_y_pred,
-        slot_ids=np.asarray(datasets["test"].slot_ids_np, dtype=np.int64),
-        num_actions=num_actions,
-    )
 
-    split_summary = {
+    metrics_payload: dict = {
+        "best_epoch": best_epoch,
+        "best_val_loss": best_val_loss,
+        "best_val_metrics": best_val_metrics,
+        "best_val_metrics_by_slot": best_val_metrics_by_slot,
+        "history": history,
+    }
+
+    split_summary: dict = {
         "train_trials": len(train_trials),
         "val_trials": len(val_trials),
         "test_trials": len(test_trials),
@@ -355,17 +378,22 @@ def run_training(config: BCConfig) -> Path:
         "test_trial_ids": [trial.trial_id for trial in test_trials],
     }
 
-    metrics_payload = {
-        "best_epoch": best_epoch,
-        "best_val_macro_f1": best_val_macro_f1,
-        "best_val_loss": best_val_loss,
-        "best_val_metrics": best_val_metrics,
-        "best_val_metrics_by_slot": best_val_metrics_by_slot,
-        "test_loss": test_loss,
-        "test_metrics": test_metrics,
-        "test_metrics_by_slot": test_metrics_by_slot,
-        "history": history,
-    }
+    if "test" in dataloaders:
+        test_loss, test_metrics, test_y_true, test_y_pred = evaluate(
+            model=model,
+            dataloader=dataloaders["test"],
+            criterion=criterion,
+            device=device,
+        )
+        test_metrics_by_slot = _compute_metrics_by_slot(
+            y_true=test_y_true,
+            y_pred=test_y_pred,
+            slot_ids=np.asarray(datasets["test"].slot_ids_np, dtype=np.int64),
+            num_actions=num_actions,
+        )
+        metrics_payload["test_loss"] = test_loss
+        metrics_payload["test_metrics"] = test_metrics
+        metrics_payload["test_metrics_by_slot"] = test_metrics_by_slot
     report_payload = {
         "clean_report": clean_report,
         "featurization_report": feat_report,
@@ -379,12 +407,14 @@ def run_training(config: BCConfig) -> Path:
     save_json(run_dir / "config.json", config_payload)
     save_json(run_dir / "label_mapping.json", label_payload)
 
-    print(f"Training complete. Best epoch: {best_epoch}, val_macro_f1={best_val_macro_f1:.4f}")
+    print(f"Training complete. Best epoch: {best_epoch}, best_val_loss={best_val_loss:.4f}")
     print(
-        f"Best-checkpoint val macro_f1={best_val_metrics['macro_f1']:.4f}, "
-        f"accuracy={best_val_metrics['accuracy']:.4f}"
+        f"Best-checkpoint val accuracy={best_val_metrics['accuracy']:.4f}, "
+        f"macro_f1={best_val_metrics['macro_f1']:.4f}"
     )
-    print(f"Test macro_f1={test_metrics['macro_f1']:.4f}, accuracy={test_metrics['accuracy']:.4f}")
+    if "test_metrics" in metrics_payload:
+        test_metrics = metrics_payload["test_metrics"]
+        print(f"Test macro_f1={test_metrics['macro_f1']:.4f}, accuracy={test_metrics['accuracy']:.4f}")
     print(f"Artifacts saved to: {run_dir}")
     return run_dir
 
