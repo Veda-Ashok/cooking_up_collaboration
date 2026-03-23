@@ -16,8 +16,13 @@ def world_to_physics(position: list[float]) -> b2Vec2:
     return b2Vec2(position[0], -position[1])
 
 
-def physics_to_world(position: b2Vec2) -> list[float]:
-    return [position.x, -position.y]
+def physics_to_world(position: b2Vec2, decimal_places: int = 3) -> list[float]:
+    x = position.x
+    y = -position.y
+    if decimal_places is not None:
+        x = round(x, decimal_places)
+        y = round(y, decimal_places)
+    return [x, y]
 
 
 def physics_to_screen(position: b2Vec2) -> rl.Vector2:
@@ -846,23 +851,24 @@ class Level:
         if delta_time <= 0.0:
             return
 
+        export_state_snapshot = create_game_state(self) if self.export_state else None
+
         for game_object in self.game_objects:
             game_object.update(delta_time)
-
-        self.world.Step(delta_time, self.velocity_iterations, self.position_iterations)
 
         if self.export_state:
             input_states = []
             for player in self.players:
                 input_states.append(player.last_input_state)
                 input_states[-1]["is_human"] = isinstance(player.agent, HumanAgent)
-            state = create_game_state(self)
-            state["input_states"] = input_states
+            export_state_snapshot["input_states"] = input_states
 
             if self.current_frame % self.export_every_n_frames == 0:
                 with open(self.export_name, "a+") as f:
-                    json.dump(state, f)
+                    json.dump(export_state_snapshot, f)
                     f.write("\n")
+
+        self.world.Step(delta_time, self.velocity_iterations, self.position_iterations)
 
         self.current_frame += 1
 
@@ -899,20 +905,32 @@ NAME_TO_OBJECT = {v: k for k, v in OBJECT_TO_NAME.items()}
 
 
 def create_game_state(level: Level) -> dict:
-        state: dict[str, dict[str, float]] = {}
-        for player in level.players:
-            name = f"player_{player.player_num}"
-            position = physics_to_world(player.body.position)
-            state[name] = {"position": position}
+        state: dict[str, list[dict[str, object]]] = {"players": [], "objects": []}
+        for player in sorted(level.players, key=lambda player: player.player_num):
+            state["players"].append(
+                {
+                    "name": f"player_{player.player_num}",
+                    "position": physics_to_world(player.body.position),
+                }
+            )
+
         for game_object in level.game_objects:
-            if not isinstance(game_object, Player):
-                name = OBJECT_TO_NAME[type(game_object)]
-                position = physics_to_world(game_object.body.position)
-                state[name] = {"position": position}
-                if isinstance(game_object, Onion) or isinstance(game_object, Soup):
-                    state[name]["progress"] = game_object.progress
-                if isinstance(game_object, Soup):
-                    state[name]["ingredients"] = [OBJECT_TO_NAME[type(ingredient)] for ingredient in game_object.ingredients]
-                    while len(state[name]["ingredients"]) < 3:
-                        state[name]["ingredients"].append(None)
+            if isinstance(game_object, Player):
+                continue
+
+            object_state: dict[str, object] = {
+                "name": OBJECT_TO_NAME[type(game_object)],
+                "position": physics_to_world(game_object.body.position),
+            }
+            if isinstance(game_object, (Onion, Soup)):
+                object_state["progress"] = game_object.progress
+            if isinstance(game_object, Soup):
+                object_state["ingredients"] = [
+                    OBJECT_TO_NAME[type(ingredient)] for ingredient in game_object.ingredients
+                ]
+                while len(object_state["ingredients"]) < 3:
+                    object_state["ingredients"].append(None)
+
+            state["objects"].append(object_state)
+
         return state
