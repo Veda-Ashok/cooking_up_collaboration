@@ -1,4 +1,3 @@
-from __future__ import annotations
 import argparse
 import json
 import time
@@ -17,6 +16,7 @@ except ImportError:
 
 from rl.bc_init_utils import load_lstm_policy_from_checkpoint
 from rl.env_utils import OvercookedRLWrapper
+from rl.models.overcooked_cnn import OvercookedCNN
 from rl.sampling_utils import (
     configure_model_sampling_temperature,
     normalize_sampling_mode,
@@ -112,15 +112,18 @@ def _infer_obs_mode(checkpoint_path: Path) -> str:
 
 
 def _load_model(checkpoint_path: Path, algo: str, device: str):
+    custom_objects = {"OvercookedCNN": OvercookedCNN}
     if algo in {"recurrent_ppo", "ppo_lstm", "lstm_ppo"}:
         if RecurrentPPO is None:
             raise ImportError(
                 "sb3-contrib is required for recurrent PPO rollouts. Install with `pip install sb3-contrib`."
             )
-        model = RecurrentPPO.load(str(checkpoint_path), device=device)
+        model = RecurrentPPO.load(str(checkpoint_path), device=device,
+                                  custom_objects=custom_objects)
         is_recurrent = True
     elif algo == "ppo":
-        model = PPO.load(str(checkpoint_path), device=device)
+        model = PPO.load(str(checkpoint_path), device=device,
+                         custom_objects=custom_objects)
         is_recurrent = False
     else:
         raise ValueError(f"Unsupported algo={algo}")

@@ -272,7 +272,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--horizon", type=int, default=400,
                    help="Max timesteps per episode (default 400, paper uses 400)")
     p.add_argument("--planner-cache-dir", type=str, default=".cache/overcooked_planners")
-    p.add_argument("--reward-shaping-coef", type=float, default=0.5,
+    p.add_argument("--reward-shaping-coef", type=float, default=3,
                    help="Multiplier for event-based shaped reward (0=sparse only, 1.0=full shaping)")
 
     p.add_argument("--self-play-steps", type=int, default=150_000)
@@ -287,7 +287,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--gae-lambda", type=float, default=0.95)
     p.add_argument("--clip-range", type=float, default=0.2)
-    p.add_argument("--ent-coef", type=float, default=0.01)
+    p.add_argument("--ent-coef", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=42)
 
     p.add_argument("--outdir", type=str, default="trained_models/rl")

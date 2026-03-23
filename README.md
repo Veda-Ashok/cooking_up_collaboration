@@ -426,7 +426,7 @@ BC alone produces agents that imitate human actions well in classification but o
 
 ```bash
 python -m rl.train_ppo_curriculum \
-  --bc-checkpoint trained_models/bc/bc_cramped_v1/best.pt \
+  --bc-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
   --layout cramped_room \
   --run-name curriculum_v1
 ```
@@ -471,9 +471,9 @@ Run these three for a clean comparison:
 | Self-play only | `--anneal-steps 0` (never introduces BC partner) |
 | Full curriculum | Default `--self-play-steps 150000 --anneal-steps 150000` |
 
-## PPO with CNN + Lossless Observations (Paper-Style)
+## PPO with CNN + Lossless Observations
 
-This approach moves the PPO learner from the 96-D featurized vector to the **lossless spatial tensor** `(H, W, C)` that the original Overcooked paper uses, while the BC partner continues to receive the 96-D vector it was trained on.
+This approach moves the PPO learner from the 96-D featurized vector to the **lossless spatial tensor** `(H, W, C)`, while the BC partner continues to receive the 96-D vector it was trained on. It supports the same self-play + BC anneal curriculum as the featurized variant.
 
 ### Why dual observation modes?
 
@@ -482,41 +482,65 @@ The featurized vector is a compact hand-crafted summary -- it works well for BC 
 ### Architecture
 
 - **Learner**: PPO with `OvercookedCNN` feature extractor (3 conv layers + small MLP), sees `(5, 4, 26)` spatial tensor on `cramped_room`
-- **Partner**: Frozen BC model (MLP or LSTM), sees `(96,)` featurized vector
-- **Reward shaping**: Annealed linearly from full (`1.0`) to zero (`0.0`) over training via `LinearRewardShapingCallback`
+- **Partner**: Frozen BC model (MLP or LSTM) on featurized `(96,)` vector, alternating with frozen CNN self-play snapshots during the curriculum
+- **Curriculum**: Same two-stage schedule as the featurized curriculum -- self-play first, then BC anneal
+- **Reward shaping**: Annealed linearly via `LinearRewardShapingCallback` (runs alongside the curriculum callback)
+
+### Self-play with CNN
+
+During self-play, the frozen snapshot (`FrozenCNNPartner`) clones the CNN PPO policy and reads lossless observations directly from the env state. This bypasses the featurized partner stream so the self-play partner sees the same spatial tensor the learner was trained on. During anneal, the BC partner receives featurized observations as usual.
 
 ### Quick start
 
 ```bash
 python -m rl.train_ppo_cnn_bcpartner \
-  --bc-checkpoint trained_models/bc/bc_lstm_cramped_v1/best.pt \
+  --bc-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
   --layout cramped_room \
-  --run-name cnn_bc_v1
+  --run-name cnn_curriculum_v1
 ```
 
 ### Full options
 
 ```bash
 python -m rl.train_ppo_cnn_bcpartner \
-  --bc-checkpoint trained_models/bc/bc_lstm_cramped_v1/best.pt \
+  --bc-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
   --layout cramped_room \
-  --total-timesteps 200000 \
-  --reward-shaping-start 1.0 \
+  --self-play-steps 150000 \
+  --anneal-steps 150000 \
+  --snapshot-freq 10000 \
+  --bc-prob-start 0.10 \
+  --bc-prob-end 0.80 \
+  --reward-shaping-start 0.3 \
   --reward-shaping-end 0.0 \
   --features-dim 32 \
   --lr 3e-4 \
   --ent-coef 0.01 \
-  --run-name cnn_bc_v1
+  --run-name cnn_curriculum_v1
+```
+
+### BC-only mode (no self-play)
+
+To skip self-play and train against the BC partner the entire time:
+
+```bash
+python -m rl.train_ppo_cnn_bcpartner \
+  --bc-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
+  --layout cramped_room \
+  --self-play-steps 0 \
+  --anneal-steps 300000 \
+  --bc-prob-start 1.0 \
+  --bc-prob-end 1.0 \
+  --run-name cnn_bc_only_v1
 ```
 
 ### Key files
 
 | File | Purpose |
 |------|---------|
-| `rl/env_utils.py` | `OvercookedRLWrapper` now accepts `obs_mode` and `partner_obs_mode` |
+| `rl/env_utils.py` | `OvercookedRLWrapper` with `obs_mode` and `partner_obs_mode` |
 | `rl/models/overcooked_cnn.py` | `OvercookedCNN` feature extractor for SB3 |
 | `rl/callbacks.py` | `LinearRewardShapingCallback` for reward shaping anneal |
-| `rl/train_ppo_cnn_bcpartner.py` | Training script |
+| `rl/train_ppo_cnn_bcpartner.py` | Training script with CNN + curriculum + shaping anneal |
 
 ### Outputs
 
@@ -524,11 +548,11 @@ Saved under `rl/trained_models/<run-name>/`:
 - `final_model.zip` -- the trained PPO policy
 - `train_config.json` -- all hyperparameters
 
-TensorBoard logs go to `./logs/ppo_cnn_bc/`.
+TensorBoard logs go to `./logs/ppo_cnn_curriculum/`. Track `curriculum/bc_prob`, `curriculum/is_anneal_phase`, and `reward_shaping/coef`.
 
 ### Observation modes in the wrapper
 
-The `OvercookedRLWrapper` now supports:
+The `OvercookedRLWrapper` supports:
 
 | `obs_mode` | Shape | Description |
 |---|---|---|
@@ -546,25 +570,38 @@ env = OvercookedRLWrapper(
 )
 ```
 
-### Reward shaping anneal
+### Reward shaping
 
-The `LinearRewardShapingCallback` linearly interpolates `reward_shaping_coef` from `start_coef` to `end_coef` over training. This lets PPO bootstrap off dense potential-based shaping early, then shift to the true sparse objective:
+Late-pipeline event bonuses (not farmable):
+
+| Event | Bonus |
+|---|---|
+| Pot goes from full-idle to cooking | +0.10 |
+| `useful_dish_pickup` | +0.05 |
+| `soup_pickup` | +0.10 |
+| `soup_delivery` | +0.10 |
+
+The `LinearRewardShapingCallback` linearly interpolates `reward_shaping_coef` from `start_coef` to `end_coef` over training:
 
 ```python
 callback = LinearRewardShapingCallback(
-    total_timesteps=200_000,
-    start_coef=1.0,   # full shaping at start
+    total_timesteps=300_000,
+    start_coef=0.3,   # moderate shaping at start
     end_coef=0.0,     # sparse-only by end
 )
 ```
 
-Track `reward_shaping/coef` in TensorBoard to see the anneal.
+Track `reward_shaping/coef` in TensorBoard.
 
-### Recommended order
+### Recommended ablations
 
-1. Train BC (MLP or LSTM) on `cramped_room` first
-2. Try **CNN PPO + BC partner** (this section) -- simplest RL setup
-3. If that works, try adding the **curriculum** (self-play then anneal) on top
+| Ablation | How |
+|---|---|
+| BC partner only (no self-play) | `--self-play-steps 0 --bc-prob-start 1.0 --bc-prob-end 1.0` |
+| Self-play only (no BC) | `--anneal-steps 0` |
+| Full curriculum | Default `--self-play-steps 150000 --anneal-steps 150000` |
+| No shaping | `--reward-shaping-start 0 --reward-shaping-end 0` |
+| Featurized MLP PPO | Use `rl/train_ppo_curriculum.py` instead |
 
 ## Live rollout viewer (with optional MP4 save)
 
@@ -572,18 +609,18 @@ You can run a local live rollout viewer while the game is being simulated, and o
 - **MLP vs LSTM** BC partner from `config.json` alongside the partner checkpoint
 - **Observation mode** (`featurized` vs `lossless`) from `train_config.json` alongside the RL checkpoint
 
-### CNN PPO + BC partner (lossless learner obs)
+### CNN PPO curriculum (lossless learner obs)
 
 ```bash
 python -m rl.live_rollout \
-  --checkpoint rl/trained_models/cnn_bc_v1/final_model.zip \
+  --checkpoint trained_models/rl/cnn_curriculum_v1/final_model.zip \
   --algo ppo \
   --layout cramped_room \
-  --partner-checkpoint trained_models/bc/bc_lstm_cramped_v1/best.pt \
+  --partner-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
   --fps 10
 ```
 
-The `--obs-mode auto` default reads `train_config.json` and detects `lossless`. You can override with `--obs-mode featurized` or `--obs-mode lossless`.
+The `--obs-mode auto` default reads `train_config.json` and detects `lossless`. The viewer auto-loads the `OvercookedCNN` feature extractor so CNN PPO models work out of the box. You can override with `--obs-mode featurized` or `--obs-mode lossless`.
 
 ### Curriculum PPO + BC partner (featurized learner obs)
 
@@ -592,7 +629,7 @@ python -m rl.live_rollout \
   --checkpoint trained_models/rl/curriculum_v1/final_model.zip \
   --algo ppo \
   --layout cramped_room \
-  --partner-checkpoint trained_models/bc/bc_cramped_v1/best.pt \
+  --partner-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
   --sampling-mode sample \
   --fps 10
 ```
@@ -614,7 +651,7 @@ python -m rl.live_rollout \
 
 ```bash
 python -m rl.live_rollout \
-  --checkpoint rl/trained_models/cnn_bc_v1/final_model.zip \
+  --checkpoint rl/trained_models/cnn_curriculum_v1/final_model.zip \
   --algo ppo \
   --sampling-mode argmax \
   --save-video outputs/rollout.mp4 \
