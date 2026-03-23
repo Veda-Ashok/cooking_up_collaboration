@@ -1,5 +1,6 @@
 import random
-from ravioli.agents import Agent
+
+from .base import Agent
 
 class RandomAgent(Agent):
     def update(self, delta_time: float, state: dict) -> dict:

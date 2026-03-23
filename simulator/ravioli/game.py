@@ -5,7 +5,7 @@ import pyray as rl
 from datetime import datetime
 from pathlib import Path
 from Box2D import b2CircleShape, b2PolygonShape, b2Vec2, b2World
-from ravioli.agents import RandomAgent, HumanAgent, Agent
+from ravioli.agents import AGENT_REGISTRY, HumanAgent, Agent, create_agent, get_agent_id
 
 
 WORLD_SCALE = 50.0
@@ -168,7 +168,7 @@ class Interactable(ObjectHolder):
     """
     def __init__(self, level):
         super().__init__(level)
-        self.total_time = 2.0
+        self.total_time = 1.5
         self.current_time = 0.0
         self.progress = 0.0
         self.do_interact = False
@@ -288,6 +288,7 @@ class Tabletop(ObjectHolder):
 class Stove(Interactable):
     def __init__(self, level: "Level", position: b2Vec2):
         super().__init__(level)
+        self.total_time = 12.0
         self.body = level.world.CreateStaticBody(position=position)
         self.body.CreateFixture(
             shape=b2PolygonShape(box=(TABLETOP_SIZE.x / 2, TABLETOP_SIZE.y / 2)),
@@ -338,6 +339,7 @@ class Stove(Interactable):
 class ChoppingBoard(Interactable):
     def __init__(self, level: "Level", position: b2Vec2):
         super().__init__(level)
+        self.total_time = 1.5
         self.body = level.world.CreateStaticBody(position=position)
         self.body.CreateFixture(
             shape=b2PolygonShape(box=(TABLETOP_SIZE.x / 2, TABLETOP_SIZE.y / 2)),
@@ -375,9 +377,9 @@ class Plate(Holdable, IngredientHolder):
         draw_centered_circle(center=physics_to_screen(self.body.position), radius=WORLD_SCALE * 0.25, color=rl.WHITE)
 
     def put_down(self, obj: GameObject) -> bool:
-        # When putting down an IngredientHolder, take its contents instead.
+        # When putting down an IngredientHolder, take its contents instead, but only if it has soup with 3 ingredients.
         if self.held_object is None:
-            if isinstance(obj, IngredientHolder) and obj.held_object is not None and isinstance(obj.held_object, Soup):
+            if isinstance(obj, IngredientHolder) and obj.held_object is not None and isinstance(obj.held_object, Soup) and len(obj.held_object.ingredients) == 3:
                 self.held_object = obj.held_object
                 self.held_object.parent = self
                 obj.held_object = None
@@ -427,10 +429,11 @@ class Pot(Holdable, IngredientHolder):
                         self.parent.current_time = self.parent.progress * self.parent.total_time
                 return added
             elif isinstance(obj, IngredientHolder) and obj.held_object is None:
-                # When putting down an IngredientHolder that is empty, transfer our contents instead.
-                obj.held_object = self.held_object
-                obj.held_object.parent = obj
-                self.held_object = None
+                # When putting down an IngredientHolder that is empty, transfer our contents instead, but only if the soup has 3 ingredients.
+                if len(self.held_object.ingredients) == 3:
+                    obj.held_object = self.held_object
+                    obj.held_object.parent = obj
+                    self.held_object = None
                 # Return False because we don't want the player to drop the IngredientHolder.
                 return False
         return False
@@ -469,9 +472,9 @@ class DeliveryStation(ObjectHolder):
         )
 
     def put_down(self, obj: Plate) -> bool:
-        # Only accept plates, and only if they have a cooked soup on them.
+        # Only accept plates, and only if they have a cooked soup on them with 3 ingredients.
         # DeliveryStation can accept an unlimited number of plates.
-        if isinstance(obj, Plate) and isinstance(obj.held_object, Soup) and obj.held_object.progress == 1.0:
+        if isinstance(obj, Plate) and isinstance(obj.held_object, Soup) and len(obj.held_object.ingredients) == 3 and obj.held_object.progress == 1.0:
             if super().put_down(obj):
                 self.level.game_objects.remove(obj.held_object)
             obj.held_object = None
@@ -656,12 +659,24 @@ class Player:
 
 
 class Level:
-    def __init__(self, level_data: dict, export_state: bool = False, export_every_n_frames: int = 1):
-        self.level_data = level_data
+    LEVELS_DIR = Path(__file__).resolve().parent.parent / "levels"
+
+    def __init__(
+        self,
+        level_info: dict[str, str],
+        export_state: bool = False,
+        export_every_n_frames: int = 1,
+    ):
+        self.level_info = level_info
+        self.level_file = level_info["level_file"]
+        self.level_data = self.load_level_data(self.level_file)
+        self.player_assignments = {
+            key: value for key, value in level_info.items() if key.startswith("player_")
+        }
         self.export_state = export_state
         self.export_every_n_frames = export_every_n_frames
-        self.layout_objects: list[dict] = level_data.get("layout", [])
-        self.player_starts: list[list] = level_data.get("player_starts", [])
+        self.layout_objects: list[dict] = self.level_data.get("layout", [])
+        self.player_starts: list[list] = self.level_data.get("player_starts", [])
         self.velocity_iterations = 8
         self.position_iterations = 3
         self.world = b2World(gravity=(0, 0), doSleep=True)
@@ -679,6 +694,16 @@ class Level:
 
         self.build_level()
         self.camera = self.build_camera()
+
+    def load_level_data(self, level_file: str) -> dict:
+        level_path = self.LEVELS_DIR / level_file
+        with level_path.open("r", encoding="utf-8") as file:
+            return json.load(file)
+
+    def get_player_agent_info(self, player_num: int) -> str | dict[str, object]:
+        player_key = f"player_{player_num + 1}"
+        agent_info = self.player_assignments.get(player_key)
+        return agent_info
 
     def get_screen_size(self) -> tuple[int, int]:
         width = rl.get_screen_width()
@@ -744,9 +769,8 @@ class Level:
     def build_level(self) -> None:
         # Create players first so they are first in the draw order.
         for player_num, player_start in enumerate(self.player_starts):
-
             position = world_to_physics(player_start)
-            agent = HumanAgent(player_num) if player_num == 0 else RandomAgent(player_num)
+            agent = create_agent(self.get_player_agent_info(player_num), player_num)
             player = Player(
                 player_num=player_num,
                 level=self,
