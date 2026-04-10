@@ -15,6 +15,7 @@ class Goal(str, Enum):
     COLLECT_ONION = "COLLECT_ONION"
     CHOP_ONION = "CHOP_ONION"
     PUT_ONION_ON_CHOPPING_BLOCK = "PUT_ONION_ON_CHOPPING_BLOCK"
+    MOVE_CHOPPED_ONION_TO_TABLETOP = "MOVE_CHOPPED_ONION_TO_TABLETOP"
     COLLECT_DIRTY_DISHES = "COLLECT_DIRTY_DISHES"
     PUT_DIRTY_DISHES_IN_SINK = "PUT_DIRTY_DISHES_IN_SINK"
     WASH_DISHES = "WASH_DISHES"
@@ -70,6 +71,7 @@ class AutoAgent(Agent):
             "objects_by_id": objects_by_id,
             "objects_by_name": objects_by_name,
             "self_player": players_by_id.get(f"player_{self.player_num}"),
+            "other_players": [player for player in players if player["id"] != f"player_{self.player_num}"][0],
         }
 
     def choose_goal(self, world: dict) -> tuple[Goal, dict | None]:
@@ -149,6 +151,8 @@ class AutoAgent(Agent):
             return self.execute_put_onion_on_chopping_board(world, target)
         if goal == Goal.CHOP_ONION:
             return self.execute_chop_onion(world, target)
+        if goal == Goal.MOVE_CHOPPED_ONION_TO_TABLETOP:
+            return self.execute_move_chopped_onion_to_tabletop(world, target)
         if goal == Goal.COLLECT_DIRTY_DISHES:
             return self.execute_collect_dirty_dishes(world, target)
         if goal == Goal.PUT_DIRTY_DISHES_IN_SINK:
@@ -236,6 +240,15 @@ class AutoAgent(Agent):
         if held_object is None or self.is_raw_onion(held_object):
             return self.move_to_object(world, target, interact=True)
         return self.execute_put_down_held_object(world, self.find_drop_target(world, held_object))
+
+    def execute_move_chopped_onion_to_tabletop(self, world: dict, target: dict | None) -> dict:
+        held_object = self.get_held_object(world)
+        if self.is_chopped_onion(held_object):
+            tabletop = target if target is not None and target["name"] == "tabletop" else self.nearest_object(world, self.get_empty_tabletops(world))
+            return self.move_to_object(world, tabletop, carry=True)
+        if target is not None:
+            return self.move_to_object(world, target, carry=True)
+        return self.zero_input()
 
     def execute_collect_dirty_dishes(self, world: dict, target: dict | None) -> dict:
         held_object = self.get_held_object(world)
@@ -414,6 +427,8 @@ class AutoAgent(Agent):
             for obj in world["objects"]
             if obj["name"] in self.BLOCKER_NAMES
         ]
+        blockers.append(world["other_players"]["position"])
+
         for blocker in blockers:
             if self.distance(node, blocker) < self.BLOCKER_CLEARANCE:
                 return False
@@ -529,6 +544,12 @@ class AutoAgent(Agent):
             if board.get("held_object_id") is None
         ]
 
+    def get_empty_tabletops(self, world: dict) -> list[dict]:
+        return [
+            tabletop for tabletop in self.get_objects(world, "tabletop")
+            if tabletop.get("held_object_id") is None
+        ]
+
     def get_chopping_boards_with_raw_onions(self, world: dict) -> list[dict]:
         boards = []
         for board in self.get_objects(world, "chopping_board"):
@@ -540,17 +561,24 @@ class AutoAgent(Agent):
                 boards.append(board)
         return boards
 
+    def get_chopping_boards_with_chopped_onions(self, world: dict) -> list[dict]:
+        boards = []
+        for board in self.get_objects(world, "chopping_board"):
+            held_object_id = board.get("held_object_id")
+            if held_object_id is None:
+                continue
+            onion = world["objects_by_id"].get(held_object_id)
+            if onion is not None and self.is_chopped_onion(onion):
+                boards.append(board)
+        return boards
+
     def find_drop_target(self, world: dict, held_object: dict | None) -> dict | None:
         if held_object is None:
             return None
         if self.is_dirty_stack(held_object):
             return self.nearest_object(world, self.get_objects(world, "sink"))
         if self.is_clean_plate(held_object):
-            empty_tabletops = [
-                tabletop for tabletop in self.get_objects(world, "tabletop")
-                if tabletop.get("held_object_id") is None
-            ]
-            return self.nearest_object(world, empty_tabletops)
+            return self.nearest_object(world, self.get_empty_tabletops(world))
         if self.is_chopped_onion(held_object):
             pot = self.nearest_object(world, self.get_pots_needing_onions(world))
             if pot is not None:
@@ -559,11 +587,7 @@ class AutoAgent(Agent):
             chopping_board = self.nearest_object(world, self.get_empty_chopping_boards(world))
             if chopping_board is not None:
                 return chopping_board
-        empty_tabletops = [
-            tabletop for tabletop in self.get_objects(world, "tabletop")
-            if tabletop.get("held_object_id") is None
-        ]
-        return self.nearest_object(world, empty_tabletops)
+        return self.nearest_object(world, self.get_empty_tabletops(world))
 
     def nearest_object(self, world: dict, objects: list[dict]) -> dict | None:
         player = world["self_player"]
@@ -624,3 +648,89 @@ class AutoAgent(Agent):
 
     def zero_input(self) -> dict:
         return self.input_state()
+
+
+class AutoOnionAgent(AutoAgent):
+    def choose_goal(self, world: dict) -> tuple[Goal, dict | None]:
+        held_object = self.get_held_object(world)
+        empty_tabletops = self.get_empty_tabletops(world)
+        empty_chopping_boards = self.get_empty_chopping_boards(world)
+        chopping_boards_with_raw_onions = self.get_chopping_boards_with_raw_onions(world)
+        chopping_boards_with_chopped_onions = self.get_chopping_boards_with_chopped_onions(world)
+        onion_dispensers = self.get_onion_dispensers(world)
+
+        if self.is_chopped_onion(held_object):
+            return Goal.MOVE_CHOPPED_ONION_TO_TABLETOP, self.nearest_object(world, empty_tabletops)
+
+        if chopping_boards_with_chopped_onions:
+            return Goal.MOVE_CHOPPED_ONION_TO_TABLETOP, self.nearest_object(world, chopping_boards_with_chopped_onions)
+
+        if self.is_raw_onion(held_object):
+            if empty_chopping_boards:
+                return Goal.PUT_ONION_ON_CHOPPING_BLOCK, self.nearest_object(world, empty_chopping_boards)
+            return Goal.PUT_DOWN_HELD_OBJECT, self.nearest_object(world, empty_tabletops)
+
+        if chopping_boards_with_raw_onions:
+            return Goal.CHOP_ONION, self.nearest_object(world, chopping_boards_with_raw_onions)
+
+        if held_object is None and onion_dispensers:
+            return Goal.COLLECT_ONION, self.nearest_object(world, onion_dispensers)
+
+        if held_object is not None:
+            return Goal.PUT_DOWN_HELD_OBJECT, self.nearest_object(world, empty_tabletops)
+
+        return Goal.IDLE, None
+
+    def find_drop_target(self, world: dict, held_object: dict | None) -> dict | None:
+        if self.is_chopped_onion(held_object):
+            return self.nearest_object(world, self.get_empty_tabletops(world))
+        return super().find_drop_target(world, held_object)
+
+
+class AutoSoupAgent(AutoAgent):
+    def choose_goal(self, world: dict) -> tuple[Goal, dict | None]:
+        plated_soups = self.get_plated_soups(world)
+        cooked_soups = self.get_cooked_soups(world)
+        clean_plates = self.get_clean_plates(world)
+        dirty_stacks = self.get_dirty_stacks(world)
+        sinks_with_dirty_dishes = self.get_sinks_with_dirty_dishes(world)
+        pots_needing_onions = self.get_pots_needing_onions(world)
+        chopped_onions = self.get_chopped_onions(world)
+        held_object = self.get_held_object(world)
+
+        if self.is_plate_with_soup(held_object):
+            return Goal.DELIVER_SOUP, self.nearest_object(world, self.get_objects(world, "delivery_station"))
+
+        if plated_soups:
+            return Goal.DELIVER_SOUP, self.nearest_object(world, plated_soups)
+
+        if cooked_soups:
+            if self.is_clean_plate(held_object):
+                return Goal.COLLECT_SOUP, self.nearest_object(world, cooked_soups)
+            if held_object is None and clean_plates:
+                return Goal.COLLECT_PLATE, self.nearest_object(world, clean_plates)
+
+        if not clean_plates and not self.is_clean_plate(held_object):
+            if sinks_with_dirty_dishes:
+                return Goal.WASH_DISHES, self.nearest_object(world, sinks_with_dirty_dishes)
+            if self.is_dirty_stack(held_object):
+                return Goal.PUT_DIRTY_DISHES_IN_SINK, self.nearest_object(world, self.get_objects(world, "sink"))
+            if dirty_stacks:
+                return Goal.COLLECT_DIRTY_DISHES, self.nearest_object(world, dirty_stacks)
+
+        if self.is_chopped_onion(held_object):
+            return Goal.MAKE_SOUP, self.nearest_object(world, pots_needing_onions)
+
+        if pots_needing_onions and chopped_onions:
+            return Goal.COLLECT_CHOPPED_ONION, self.nearest_object(world, chopped_onions)
+
+        if sinks_with_dirty_dishes:
+            return Goal.WASH_DISHES, self.nearest_object(world, sinks_with_dirty_dishes)
+
+        if self.is_dirty_stack(held_object):
+            return Goal.PUT_DIRTY_DISHES_IN_SINK, self.nearest_object(world, self.get_objects(world, "sink"))
+
+        if held_object is not None:
+            return Goal.PUT_DOWN_HELD_OBJECT, self.find_drop_target(world, held_object)
+
+        return Goal.IDLE, None

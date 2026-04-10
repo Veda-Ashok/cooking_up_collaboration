@@ -1,13 +1,15 @@
 from .base import Agent
 from .human import HumanAgent
 from .random import RandomAgent
-from .auto import AutoAgent
+from .auto import AutoAgent, AutoOnionAgent, AutoSoupAgent
 
 
 AGENT_TYPES = (
     {"id": "human", "label": "Human", "class": HumanAgent},
     {"id": "random", "label": "Random", "class": RandomAgent},
     {"id": "auto", "label": "Auto", "class": AutoAgent},
+    {"id": "auto_onion", "label": "Auto Onion", "class": AutoOnionAgent},
+    {"id": "auto_soup", "label": "Auto Soup", "class": AutoSoupAgent},
 )
 
 AGENT_REGISTRY = {agent_type["id"]: agent_type for agent_type in AGENT_TYPES}
