@@ -1,0 +1,31 @@
+{
+  "layout": "cramped_room",
+  "bc_checkpoint": "trained_models/bc/bc_mlp_cramped_v1/best.pt",
+  "bc_init": true,
+  "bc_hidden": [
+    64,
+    64
+  ],
+  "player_idx": "alternate",
+  "self_play_steps": 0,
+  "anneal_steps": 1000000,
+  "snapshot_freq": 25000,
+  "bc_prob_start": 1.0,
+  "bc_prob_end": 1.0,
+  "total_timesteps": 1000000,
+  "reward_shaping_start": 0.0,
+  "reward_shaping_end": 0.0,
+  "reward_clip": 5.0,
+  "n_envs": 8,
+  "lr": 0.0001,
+  "n_steps": 2048,
+  "batch_size": 256,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_range": 0.15,
+  "ent_coef": 0.02,
+  "vf_coef": 0.5,
+  "max_grad_norm": 0.5,
+  "n_epochs": 5,
+  "seed": 42
+}

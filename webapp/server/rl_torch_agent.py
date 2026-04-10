@@ -1,6 +1,9 @@
+from collections import deque
 import json
+import importlib
 import logging
 import os
+import sys
 import types
 from typing import Any
 
@@ -10,11 +13,22 @@ import overcooked_ai_py.planning.planners as planning_planners
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.planning.planners import MediumLevelActionManager, NO_COUNTERS_PARAMS
 from stable_baselines3 import PPO
+from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.ppo import MlpPolicy as PPOMlpPolicy
+
+try:
+    from gymnasium import spaces
+except ImportError:
+    import gym.spaces as spaces
 
 try:
     from sb3_contrib import RecurrentPPO
+    from sb3_contrib.common.recurrent.buffers import RecurrentRolloutBuffer
+    from sb3_contrib.ppo_recurrent import MlpLstmPolicy
 except ImportError:
     RecurrentPPO = None
+    RecurrentRolloutBuffer = None
+    MlpLstmPolicy = None
 
 try:
     from rl.sampling_utils import (
@@ -76,6 +90,82 @@ except Exception:
 LOGGER = logging.getLogger(__name__)
 
 
+def _install_numpy_pickle_compat_aliases() -> None:
+    """Allow NumPy 2 pickles to load in runtimes pinned to NumPy 1.x."""
+    aliases = {
+        "numpy._core": "numpy.core",
+        "numpy._core.multiarray": "numpy.core.multiarray",
+        "numpy._core.numeric": "numpy.core.numeric",
+        "numpy._core.numerictypes": "numpy.core.numerictypes",
+        "numpy._core.records": "numpy.core.records",
+        "numpy._core.umath": "numpy.core.umath",
+        "numpy._core.fromnumeric": "numpy.core.fromnumeric",
+    }
+    for alias, target in aliases.items():
+        if alias in sys.modules:
+            continue
+        try:
+            sys.modules[alias] = importlib.import_module(target)
+        except ImportError:
+            pass
+    try:
+        numpy_module = importlib.import_module("numpy")
+        core_module = sys.modules.get("numpy._core")
+        if core_module is not None and not hasattr(numpy_module, "_core"):
+            setattr(numpy_module, "_core", core_module)
+        if core_module is not None:
+            for alias in aliases:
+                if alias == "numpy._core" or alias not in sys.modules:
+                    continue
+                setattr(core_module, alias.rsplit(".", 1)[-1], sys.modules[alias])
+    except ImportError:
+        pass
+
+
+def _constant_schedule(value: float):
+    return lambda _: value
+
+
+def _build_sb3_custom_objects(manifest: dict[str, Any], is_recurrent: bool) -> dict[str, Any]:
+    input_dim = int(manifest.get("input_dim", 96))
+    num_actions = int(manifest.get("num_actions", 6))
+    stats_window_size = int(manifest.get("stats_window_size", 100))
+    learning_rate = float(manifest.get("learning_rate", manifest.get("lr", 0.0)))
+    clip_range = float(manifest.get("clip_range", 0.2))
+
+    policy_name = str(manifest.get("policy", "")).lower()
+    if is_recurrent:
+        policy_class = MlpLstmPolicy
+        rollout_buffer_class = RecurrentRolloutBuffer
+    elif policy_name in {"", "mlppolicy", "mlp_policy"}:
+        policy_class = PPOMlpPolicy
+        rollout_buffer_class = RolloutBuffer
+    else:
+        policy_class = PPOMlpPolicy
+        rollout_buffer_class = RolloutBuffer
+
+    custom_objects = {
+        "observation_space": spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(input_dim,),
+            dtype=np.float32,
+        ),
+        "action_space": spaces.Discrete(num_actions),
+        "policy_class": policy_class,
+        "rollout_buffer_class": rollout_buffer_class,
+        "learning_rate": learning_rate,
+        "lr_schedule": _constant_schedule(learning_rate),
+        "clip_range": clip_range,
+        "_last_obs": None,
+        "_last_episode_starts": None,
+        "_last_original_obs": None,
+        "ep_info_buffer": deque(maxlen=stats_window_size),
+        "ep_success_buffer": deque(maxlen=stats_window_size),
+    }
+    return custom_objects
+
+
 class TorchRLAgent:
     IDX_TO_OVERCOOKED_ACTION = {
         0: Direction.NORTH,   # UP
@@ -124,14 +214,24 @@ class TorchRLAgent:
         checkpoint = self.manifest.get("checkpoint", "best_model.zip")
         checkpoint_path = os.path.join(self.agent_dir, checkpoint)
         self._is_recurrent = self.algo in {"recurrent_ppo", "ppo_lstm", "lstm_ppo"}
+        _install_numpy_pickle_compat_aliases()
+        custom_objects = _build_sb3_custom_objects(self.manifest, self._is_recurrent)
         if self._is_recurrent:
             if RecurrentPPO is None:
                 raise ImportError(
                     "sb3-contrib is required to load recurrent PPO agents in webapp runtime."
                 )
-            self.model = RecurrentPPO.load(checkpoint_path, device=self.device)
+            self.model = RecurrentPPO.load(
+                checkpoint_path,
+                device=self.device,
+                custom_objects=custom_objects,
+            )
         elif self.algo == "ppo":
-            self.model = PPO.load(checkpoint_path, device=self.device)
+            self.model = PPO.load(
+                checkpoint_path,
+                device=self.device,
+                custom_objects=custom_objects,
+            )
         else:
             raise ValueError(f"Unsupported rl_torch algo: {self.algo}")
         self._sampling_report = configure_model_sampling_temperature(self.model, self.sampling_temperature)
