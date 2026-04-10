@@ -839,6 +839,8 @@ class Level:
         level_info: dict[str, str],
         export_state: bool = False,
         export_every_n_frames: int = 1,
+        headless: bool = False,
+        screen_size: tuple[int, int] = (1280, 720),
     ):
         self.level_info = level_info
         self.level_file = level_info["level_file"]
@@ -848,6 +850,8 @@ class Level:
         }
         self.export_state = export_state
         self.export_every_n_frames = export_every_n_frames
+        self.headless = headless
+        self.screen_size = screen_size
         self.layout_objects: list[dict] = self.level_data.get("layout", [])
         self.player_starts: list[list] = self.level_data.get("player_starts", [])
         self.plate_return_positions = [
@@ -885,6 +889,8 @@ class Level:
         return agent_info
 
     def get_screen_size(self) -> tuple[int, int]:
+        if self.headless:
+            return self.screen_size
         width = rl.get_screen_width()
         height = rl.get_screen_height()
         return width, height
@@ -928,6 +934,8 @@ class Level:
         )
 
     def update_camera(self) -> None:
+        if self.headless:
+            return
         screen_width, screen_height = self.get_screen_size()
         self.camera.offset = rl.Vector2(screen_width / 2, screen_height / 2)
 
@@ -1078,6 +1086,8 @@ class Level:
         self.current_frame += 1
 
     def draw(self) -> None:
+        if self.headless:
+            return
         rl.begin_mode_2d(self.camera)
         for game_object in sorted(self.game_objects, key=lambda game_object: game_object.draw_order):
             game_object.draw()
