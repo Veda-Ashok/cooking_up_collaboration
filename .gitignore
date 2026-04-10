@@ -17,3 +17,5 @@ data/*csv
 
 trained_models/
 .cache/
+
+simulator/ravioli/exports/

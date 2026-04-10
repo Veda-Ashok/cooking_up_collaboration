@@ -10,6 +10,7 @@ from ravioli.agents import AGENT_REGISTRY, HumanAgent, Agent, create_agent, get_
 
 WORLD_SCALE = 50.0
 TABLETOP_SIZE = b2Vec2(1.25, 1.25)
+PLATE_RETURN_DELAY_SECONDS = 5.0
 
 
 def world_to_physics(position: list[float]) -> b2Vec2:
@@ -63,13 +64,16 @@ def get_root(holder: "ObjectHolder") -> "ObjectHolder":
     return current
 
 
-def get_leaf(holder: "ObjectHolder") -> "ObjectHolder":
+def get_leaf(holder: "ObjectHolder") -> "ObjectHolder | Holdable":
     current = holder
     while True:
-        if isinstance(current, ObjectHolder) and current.held_object is not None and isinstance(current.held_object, ObjectHolder):
-            current = current.held_object
-        else:
-            return current
+        if isinstance(current, ObjectHolder) and current.held_object is not None:
+            if isinstance(current.held_object, ObjectHolder):
+                current = current.held_object
+                continue
+            if isinstance(current.held_object, StackedDirtyPlates):
+                return current.held_object
+        return current
 
 
 def get_composite(holder: "ObjectHolder") -> "Composite | None":
@@ -98,6 +102,8 @@ def draw_progress_bar(position: rl.Vector2, progress: float) -> None:
 
 
 class GameObject:
+    draw_order = 0
+
     def __init__(self, level: "Level"):
         self.level: "Level" = level
 
@@ -113,6 +119,8 @@ class Holdable(GameObject):
     Base class for holdable objects in the game world.
     Holdable objects can be picked up and held by players, and can be put down onto object holders.
     """
+    draw_order = 10
+
     def __init__(self, level: "Level"):
         super().__init__(level)
         self.parent: ObjectHolder | None = None
@@ -120,6 +128,7 @@ class Holdable(GameObject):
 
 
 class Composite(Holdable):
+    draw_order = 20
     pass
 
 
@@ -142,6 +151,7 @@ class ObjectHolder(GameObject):
         if self.held_object is None:
             self.held_object = obj
             obj.parent = self
+            obj.body.position = b2Vec2(self.body.position.x, self.body.position.y)
             return True
         return False
 
@@ -394,10 +404,52 @@ class Plate(Holdable, IngredientHolder):
         return False
 
 
+class DirtyPlate(Holdable):
+    def __init__(self, level: "Level"):
+        super().__init__(level)
+        self.body = level.world.CreateStaticBody()
+
+    def draw(self) -> None:
+        draw_centered_circle(center=physics_to_screen(self.body.position), radius=WORLD_SCALE * 0.25, color=rl.BEIGE)
+
+
+class StackedDirtyPlates(Holdable):
+    def __init__(self, level: "Level", plate_count: int = 1):
+        super().__init__(level)
+        self.body = level.world.CreateStaticBody()
+        self.plate_count = max(plate_count, 1)
+
+    def add_plates(self, plate_count: int = 1) -> None:
+        self.plate_count += plate_count
+
+    def put_down(self, obj: GameObject) -> bool:
+        if isinstance(obj, DirtyPlate):
+            self.add_plates(1)
+            self.level.destroy_game_object(obj)
+            return True
+        if isinstance(obj, StackedDirtyPlates):
+            self.add_plates(obj.plate_count)
+            self.level.destroy_game_object(obj)
+            return True
+        return False
+
+    def draw(self) -> None:
+        center = physics_to_screen(self.body.position)
+        radius = WORLD_SCALE * 0.25
+        draw_centered_circle(center=center, radius=radius, color=rl.BEIGE)
+        rl.draw_text(str(self.plate_count), int(center.x - 6), int(center.y - 8), 20, rl.BLACK)
+
+
 class Pot(Holdable, IngredientHolder):
     def __init__(self, level: "Level"):
         super().__init__(level)
         self.body = level.world.CreateStaticBody()
+
+    def reset_parent_stove_progress(self) -> None:
+        if isinstance(self.parent, Stove):
+            self.parent.progress = 0.0
+            self.parent.current_time = 0.0
+            self.parent.do_interact = False
 
     def put_down(self, obj: GameObject) -> bool:
         # Pots can only hold cut onions.
@@ -407,10 +459,7 @@ class Pot(Holdable, IngredientHolder):
                 soup.add_ingredient(obj)
                 self.level.game_objects.append(soup)
                 self.held_object = soup
-                # Set the stove progress to 0.
-                if isinstance(obj.parent, Stove):
-                    obj.parent.progress = 0.0
-                    obj.parent.current_time = 0.0
+                self.reset_parent_stove_progress()
                 return True
             elif isinstance(obj, IngredientHolder) and obj.held_object is not None and isinstance(obj.held_object, Soup):
                 # When putting down an IngredientHolder, take its contents instead.
@@ -434,6 +483,7 @@ class Pot(Holdable, IngredientHolder):
                     obj.held_object = self.held_object
                     obj.held_object.parent = obj
                     self.held_object = None
+                    self.reset_parent_stove_progress()
                 # Return False because we don't want the player to drop the IngredientHolder.
                 return False
         return False
@@ -473,11 +523,13 @@ class DeliveryStation(ObjectHolder):
 
     def put_down(self, obj: Plate) -> bool:
         # Only accept plates, and only if they have a cooked soup on them with 3 ingredients.
-        # DeliveryStation can accept an unlimited number of plates.
         if isinstance(obj, Plate) and isinstance(obj.held_object, Soup) and len(obj.held_object.ingredients) == 3 and obj.held_object.progress == 1.0:
-            if super().put_down(obj):
-                self.level.game_objects.remove(obj.held_object)
+            delivered_soup = obj.held_object
             obj.held_object = None
+            delivered_soup.parent = None
+            self.level.destroy_game_object(delivered_soup)
+            self.level.destroy_game_object(obj)
+            self.level.schedule_dirty_plate_return()
             return True
         return False
 
@@ -501,6 +553,22 @@ class PlateReturnStation(ObjectHolder):
             color=self.color,
         )
 
+    def put_down(self, obj: Holdable) -> bool:
+        if self.held_object is None:
+            if isinstance(obj, DirtyPlate):
+                stacked_dirty_plates = StackedDirtyPlates(self.level)
+                if super().put_down(stacked_dirty_plates):
+                    self.level.game_objects.append(stacked_dirty_plates)
+                    self.level.destroy_game_object(obj)
+                    return True
+                self.level.destroy_game_object(stacked_dirty_plates)
+                return False
+            if isinstance(obj, StackedDirtyPlates):
+                return super().put_down(obj)
+        elif isinstance(self.held_object, StackedDirtyPlates):
+            return self.held_object.put_down(obj)
+        return False
+
 
 class DryingRack(ObjectHolder):
     def __init__(self, level: "Level", position: b2Vec2):
@@ -513,6 +581,21 @@ class DryingRack(ObjectHolder):
         )
         self.size = b2Vec2(TABLETOP_SIZE.x, TABLETOP_SIZE.y)
         self.color = rl.DARKBLUE
+        self.plates: list[Plate] = []
+
+    def update(self, delta_time: float) -> None:
+        del delta_time
+        offsets = (
+            b2Vec2(-0.15, 0.0),
+            b2Vec2(0.0, 0.0),
+            b2Vec2(0.15, 0.0),
+        )
+        for index, plate in enumerate(self.plates):
+            offset = offsets[min(index, len(offsets) - 1)]
+            plate.body.position = b2Vec2(
+                self.body.position.x + offset.x,
+                self.body.position.y + offset.y,
+            )
 
     def draw(self) -> None:
         draw_centered_square(
@@ -521,10 +604,28 @@ class DryingRack(ObjectHolder):
             color=self.color,
         )
 
+    def put_down(self, obj: Holdable) -> bool:
+        if isinstance(obj, Plate) and obj.held_object is None:
+            self.plates.append(obj)
+            obj.parent = self
+            self.update(0.0)
+            return True
+        return False
+
+    def pick_up(self, player: "Player") -> Holdable | None:
+        del player
+        if self.plates:
+            plate = self.plates.pop()
+            plate.parent = None
+            self.update(0.0)
+            return plate
+        return None
+
 
 class Sink(Interactable):
     def __init__(self, level: "Level", position: b2Vec2):
         super().__init__(level)
+        self.total_time = 5.0
         self.body = level.world.CreateStaticBody(position=position)
         self.body.CreateFixture(
             shape=b2PolygonShape(box=(TABLETOP_SIZE.x / 2, TABLETOP_SIZE.y / 2)),
@@ -540,6 +641,74 @@ class Sink(Interactable):
             size=WORLD_SCALE * self.size.x,
             color=self.color,
         )
+        if isinstance(self.held_object, StackedDirtyPlates):
+            draw_progress_bar(physics_to_screen(self.body.position), self.progress)
+
+    def update(self, delta_time: float) -> None:
+        ObjectHolder.update(self, delta_time)
+        if not isinstance(self.held_object, StackedDirtyPlates):
+            self.current_time = 0.0
+            self.progress = 0.0
+            self.do_interact = False
+            return
+
+        if self.do_interact:
+            self.current_time += delta_time
+            while self.current_time >= self.total_time and isinstance(self.held_object, StackedDirtyPlates):
+                if not self.level.spawn_clean_plate_at_drying_rack(self.body.position):
+                    self.current_time = self.total_time
+                    self.progress = 1.0
+                    self.do_interact = False
+                    return
+
+                self.held_object.plate_count -= 1
+                if self.held_object.plate_count <= 0:
+                    finished_stack = self.held_object
+                    self.held_object = None
+                    finished_stack.parent = None
+                    self.level.destroy_game_object(finished_stack)
+                    self.current_time = 0.0
+                    self.progress = 0.0
+                    self.do_interact = False
+                    return
+
+                self.current_time -= self.total_time
+
+        self.progress = min(self.current_time / self.total_time, 1.0)
+
+    def interact(self) -> None:
+        if isinstance(self.held_object, StackedDirtyPlates):
+            self.do_interact = not self.do_interact
+
+    def put_down(self, obj: Holdable) -> bool:
+        if self.held_object is None:
+            if isinstance(obj, DirtyPlate):
+                stacked_dirty_plates = StackedDirtyPlates(self.level)
+                if super(Interactable, self).put_down(stacked_dirty_plates):
+                    self.level.game_objects.append(stacked_dirty_plates)
+                    self.level.destroy_game_object(obj)
+                    self.current_time = 0.0
+                    self.progress = 0.0
+                    self.do_interact = False
+                    return True
+                self.level.destroy_game_object(stacked_dirty_plates)
+                return False
+            if isinstance(obj, StackedDirtyPlates):
+                self.current_time = 0.0
+                self.progress = 0.0
+                self.do_interact = False
+                return super(Interactable, self).put_down(obj)
+        elif isinstance(self.held_object, StackedDirtyPlates):
+            return self.held_object.put_down(obj)
+        return False
+
+    def pick_up(self, player: "Player") -> Holdable | None:
+        result = super(Interactable, self).pick_up(player)
+        if result is not None:
+            self.current_time = 0.0
+            self.progress = 0.0
+            self.do_interact = False
+        return result
 
 
 class RubbishBin(ObjectHolder):
@@ -571,6 +740,8 @@ class RubbishBin(ObjectHolder):
 
 
 class Player:
+    draw_order = 0
+
     def __init__(
         self,
         player_num: int,
@@ -621,8 +792,9 @@ class Player:
                     if self.held_object is None:
                         # When picking up we find the root.
                         root = get_root(object_holder)
-                        if root.held_object is not None:
-                            self.held_object = root.pick_up(self)
+                        picked_up_object = root.pick_up(self)
+                        if picked_up_object is not None:
+                            self.held_object = picked_up_object
                             return
                     else:
                         # When putting down we find the leaf.
@@ -677,6 +849,11 @@ class Level:
         self.export_every_n_frames = export_every_n_frames
         self.layout_objects: list[dict] = self.level_data.get("layout", [])
         self.player_starts: list[list] = self.level_data.get("player_starts", [])
+        self.plate_return_positions = [
+            world_to_physics(layout_object.get("position", [0.0, 0.0]))
+            for layout_object in self.layout_objects
+            if layout_object.get("type") == "plate_return_station"
+        ]
         self.velocity_iterations = 8
         self.position_iterations = 3
         self.world = b2World(gravity=(0, 0), doSleep=True)
@@ -684,6 +861,7 @@ class Level:
         self.game_objects: list[GameObject] = []
         self.interactables: list[Interactable] = []
         self.object_holders: list[ObjectHolder] = []
+        self.pending_dirty_plate_returns: list[float] = []
         self.current_frame = 0
         self.export_name = Path(__file__).with_name("exports").joinpath(datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".jsonl")
 
@@ -875,6 +1053,8 @@ class Level:
         if delta_time <= 0.0:
             return
 
+        self.update_dirty_plate_returns(delta_time)
+
         export_state_snapshot = create_game_state(self) if self.export_state else None
 
         for game_object in self.game_objects:
@@ -898,13 +1078,79 @@ class Level:
 
     def draw(self) -> None:
         rl.begin_mode_2d(self.camera)
-        for game_object in self.game_objects:
+        for game_object in sorted(self.game_objects, key=lambda game_object: game_object.draw_order):
             game_object.draw()
         rl.end_mode_2d()
 
     def remove_game_object(self, obj: GameObject) -> None:
         if obj in self.game_objects:
             self.game_objects.remove(obj)
+
+    def destroy_game_object(self, obj: GameObject) -> None:
+        self.remove_game_object(obj)
+        body = getattr(obj, "body", None)
+        if body is not None:
+            self.world.DestroyBody(body)
+
+    def schedule_dirty_plate_return(self, delay: float = PLATE_RETURN_DELAY_SECONDS) -> None:
+        self.pending_dirty_plate_returns.append(delay)
+
+    def update_dirty_plate_returns(self, delta_time: float) -> None:
+        if not self.pending_dirty_plate_returns:
+            return
+
+        pending_returns: list[float] = []
+        ready_returns = 0
+        for remaining_time in self.pending_dirty_plate_returns:
+            remaining_time -= delta_time
+            if remaining_time <= 0.0:
+                ready_returns += 1
+            else:
+                pending_returns.append(remaining_time)
+
+        self.pending_dirty_plate_returns = pending_returns
+
+        for _ in range(ready_returns):
+            if not self.spawn_dirty_plate_at_return_station():
+                self.pending_dirty_plate_returns.append(0.0)
+
+    def spawn_dirty_plate_at_return_station(self) -> bool:
+        for return_position in self.plate_return_positions:
+            for object_holder in self.object_holders:
+                if object_holder.body.position != return_position:
+                    continue
+                if not isinstance(object_holder, PlateReturnStation):
+                    continue
+                if isinstance(object_holder.held_object, StackedDirtyPlates):
+                    object_holder.held_object.add_plates(1)
+                    return True
+                if object_holder.held_object is not None:
+                    continue
+
+                stacked_dirty_plates = StackedDirtyPlates(self)
+                if object_holder.put_down(stacked_dirty_plates):
+                    self.game_objects.append(stacked_dirty_plates)
+                    return True
+                self.destroy_game_object(stacked_dirty_plates)
+
+        return False
+
+    def spawn_clean_plate_at_drying_rack(self, source_position: b2Vec2 | None = None) -> bool:
+        drying_racks = [object_holder for object_holder in self.object_holders if isinstance(object_holder, DryingRack)]
+        if not drying_racks:
+            return False
+
+        if source_position is not None:
+            drying_racks.sort(key=lambda drying_rack: (drying_rack.body.position - source_position).length)
+
+        clean_plate = Plate(self)
+        for drying_rack in drying_racks:
+            if drying_rack.put_down(clean_plate):
+                self.game_objects.append(clean_plate)
+                return True
+
+        self.destroy_game_object(clean_plate)
+        return False
 
 
 OBJECT_TO_NAME = {
@@ -919,6 +1165,8 @@ OBJECT_TO_NAME = {
     RubbishBin: "rubbish_bin",
     FireExtinguisher: "fire_extinguisher",
     Plate: "plate",
+    DirtyPlate: "dirty_plate",
+    StackedDirtyPlates: "stacked_dirty_plates",
     Pot: "pot",
     Soup: "soup",
     Onion: "onion",
@@ -954,6 +1202,8 @@ def create_game_state(level: Level) -> dict:
                 ]
                 while len(object_state["ingredients"]) < 3:
                     object_state["ingredients"].append(None)
+            if isinstance(game_object, StackedDirtyPlates):
+                object_state["plate_count"] = game_object.plate_count
 
             state["objects"].append(object_state)
 
