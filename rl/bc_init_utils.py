@@ -82,6 +82,77 @@ def load_lstm_policy_from_checkpoint(
     return model
 
 
+def transfer_bc_mlp_to_sb3_policy(
+    sb3_policy: Any,
+    bc_state_dict: dict[str, Any],
+    hidden_dims: list[int],
+) -> dict[str, Any]:
+    """Transfer BC MLPPolicy weights into an SB3 ActorCriticPolicy.
+
+    Assumes the SB3 policy was created with
+        net_arch=dict(pi=hidden_dims, vf=hidden_dims)
+    so the layer sizes match the BC checkpoint exactly.
+
+    BC MLPPolicy.network layout (with dropout):
+        [Linear, ReLU, Dropout, Linear, ReLU, Dropout, ..., Linear(out)]
+    SB3 MlpExtractor.policy_net layout (no dropout):
+        [Linear, ReLU, Linear, ReLU, ...]
+    """
+    ppo_state = sb3_policy.state_dict()
+    loaded: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+
+    bc_linears: list[tuple[str, str]] = []
+    for key in sorted(bc_state_dict.keys()):
+        if key.startswith("network.") and key.endswith(".weight"):
+            idx = key.split(".")[1]
+            bc_linears.append((f"network.{idx}.weight", f"network.{idx}.bias"))
+
+    n_hidden = len(hidden_dims)
+
+    # SB3 MlpExtractor with net_arch=dict(pi=[h1,h2], vf=[h1,h2]):
+    #   policy_net: Linear(in, h1) at .0, Linear(h1, h2) at .2, ...
+    #   value_net:  same
+    # BC network: Linear at .0, .3, .6, ... (stride 3 because of ReLU+Dropout)
+    # Hidden layers: first n_hidden bc_linears -> policy_net/value_net
+    # Output layer: last bc_linear -> action_net
+
+    for layer_i in range(n_hidden):
+        bc_w_key, bc_b_key = bc_linears[layer_i]
+        sb3_idx = layer_i * 2  # stride 2 in SB3 (Linear, ReLU)
+
+        for net_name in ("mlp_extractor.policy_net", "mlp_extractor.value_net"):
+            for suffix, bc_key in [("weight", bc_w_key), ("bias", bc_b_key)]:
+                ppo_key = f"{net_name}.{sb3_idx}.{suffix}"
+                if ppo_key in ppo_state and bc_key in bc_state_dict:
+                    if ppo_state[ppo_key].shape == bc_state_dict[bc_key].shape:
+                        ppo_state[ppo_key] = bc_state_dict[bc_key].detach().clone()
+                        loaded.append({"ppo_key": ppo_key, "bc_key": bc_key})
+                    else:
+                        skipped.append({"ppo_key": ppo_key, "bc_key": bc_key,
+                                        "reason": "shape_mismatch"})
+
+    if len(bc_linears) > n_hidden:
+        bc_out_w, bc_out_b = bc_linears[n_hidden]
+        for suffix, bc_key in [("weight", bc_out_w), ("bias", bc_out_b)]:
+            ppo_key = f"action_net.{suffix}"
+            if ppo_key in ppo_state and bc_key in bc_state_dict:
+                if ppo_state[ppo_key].shape == bc_state_dict[bc_key].shape:
+                    ppo_state[ppo_key] = bc_state_dict[bc_key].detach().clone()
+                    loaded.append({"ppo_key": ppo_key, "bc_key": bc_key})
+                else:
+                    skipped.append({"ppo_key": ppo_key, "bc_key": bc_key,
+                                    "reason": "shape_mismatch"})
+
+    sb3_policy.load_state_dict(ppo_state)
+    return {
+        "loaded_count": len(loaded),
+        "skipped_count": len(skipped),
+        "loaded_keys": loaded,
+        "skipped_keys": skipped,
+    }
+
+
 def transfer_bc_lstm_to_recurrent_policy(
     recurrent_policy: Any,
     bc_state_dict: dict[str, Any],

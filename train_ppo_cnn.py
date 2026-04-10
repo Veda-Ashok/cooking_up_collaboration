@@ -1,24 +1,16 @@
 """
-PPO with CNN feature extractor, self-play curriculum, and BC anneal.
+PPO with CNN feature extractor (lossless spatial observations).
 
-The PPO learner sees the lossless (H, W, C) spatial tensor.  The BC partner
-receives the 96-D featurized vector.  During self-play, a frozen snapshot of
-the PPO policy is used -- it encodes its own lossless observation from the
-env state directly, bypassing the partner observation stream.
-
-Stages
-------
-1. Self-play:  Learner trains against a frozen snapshot of itself.
-2. BC anneal:  Partner switches to BC with increasing probability.
-
-Reward shaping is annealed independently via LinearRewardShapingCallback.
+The PPO learner sees the lossless (H, W, C) spatial tensor while the BC
+partner receives the 96-D featurized vector.  Reward shaping is annealed
+from dense to sparse over training.
 
 Usage
 -----
-python -m rl.train_ppo_cnn_bcpartner \
-    --bc-checkpoint trained_models/bc/bc_lstm_cramped_v1/best.pt \
-    --layout cramped_room \
-    --run-name cnn_curriculum_v1
+python train_ppo_cnn.py \\
+    --bc-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \\
+    --layout cramped_room \\
+    --run-name cnn_v1
 """
 import argparse
 import json
@@ -32,12 +24,11 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_checker import check_env
 
-from rl.callbacks import LinearRewardShapingCallback
-from rl.env_utils import OvercookedRLWrapper
+from rl.callbacks import BestModelCheckpoint, EpisodeRewardLoggerCallback, LinearRewardShapingCallback
+from rl.env_utils import OvercookedRLWrapper, make_overcooked_vec_env
 from rl.models.overcooked_cnn import OvercookedCNN
 
 
-# Load frozen BC partner (MLP or LSTM, auto-detected)
 def _load_bc_partner(
     checkpoint_path: str, input_dim: int, num_actions: int,
 ) -> nn.Module:
@@ -79,11 +70,14 @@ def _load_bc_partner(
     return partner
 
 
-# Frozen snapshot of the CNN PPO policy.
-# The env partner stream sends featurized obs, but this partner needs
-# lossless obs.  It grabs the env state directly via a reference to the
-# wrapper and encodes it on the fly.
 class FrozenCNNPartner(nn.Module):
+    """Frozen snapshot of the CNN PPO policy.
+
+    The env partner stream sends featurized obs, but this partner needs
+    lossless obs.  It grabs the env state directly via a reference to the
+    wrapper and encodes it on the fly.
+    """
+
     def __init__(self, sb3_policy: nn.Module):
         super().__init__()
         self.features_extractor: nn.Module | None = None
@@ -121,13 +115,12 @@ class FrozenCNNPartner(nn.Module):
 
     @torch.no_grad()
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        # obs is the featurized partner stream -- ignore it.
-        # Encode player 1's lossless observation from the live env state.
         if self._env_ref is not None:
             enc = self._env_ref.mdp.lossless_state_encoding(
                 self._env_ref.env.state, horizon=self._env_ref.horizon)
-            lossless_p1 = np.array(enc[1], dtype=np.float32)
-            obs = torch.as_tensor(lossless_p1, dtype=torch.float32).unsqueeze(0)
+            partner_slot = 1 - self._env_ref.player_idx
+            lossless_partner = np.array(enc[partner_slot], dtype=np.float32)
+            obs = torch.as_tensor(lossless_partner, dtype=torch.float32).unsqueeze(0)
         elif obs.ndim == 1:
             obs = obs.unsqueeze(0)
 
@@ -136,12 +129,13 @@ class FrozenCNNPartner(nn.Module):
         return self.action_net(latent_pi)
 
 
-# Curriculum partner: picks BC or frozen self-play each episode
 class CurriculumPartner(nn.Module):
+    """Picks BC or frozen self-play each episode."""
+
     def __init__(
         self, bc_partner: nn.Module,
-        bc_prob_start: float = 0.10, bc_prob_end: float = 0.80,
-        anneal_steps: int = 150_000,
+        bc_prob_start: float = 0.80, bc_prob_end: float = 1.0,
+        anneal_steps: int = 500_000,
     ):
         super().__init__()
         self.bc_partner = bc_partner
@@ -199,12 +193,13 @@ class CurriculumPartner(nn.Module):
         return self.active_partner(obs)
 
 
-# Callback: curriculum schedule + snapshot refresh
 class CNNCurriculumCallback(BaseCallback):
+    """Curriculum schedule + snapshot refresh for CNN PPO."""
+
     def __init__(
         self, curriculum_partner: CurriculumPartner,
-        self_play_steps: int = 150_000, anneal_steps: int = 150_000,
-        snapshot_freq: int = 10_000, verbose: int = 1,
+        self_play_steps: int = 0, anneal_steps: int = 500_000,
+        snapshot_freq: int = 25_000, verbose: int = 1,
     ):
         super().__init__(verbose)
         self.curriculum_partner = curriculum_partner
@@ -213,24 +208,29 @@ class CNNCurriculumCallback(BaseCallback):
         self.snapshot_freq = snapshot_freq
         self.last_snapshot_step = 0
 
-    def _raw_env(self) -> OvercookedRLWrapper:
-        env = self.training_env
-        if hasattr(env, "envs"):
-            env = env.envs[0]
+    @staticmethod
+    def _unwrap(env) -> OvercookedRLWrapper:
         while not isinstance(env, OvercookedRLWrapper) and hasattr(env, "env"):
             env = env.env
         return env
 
+    def _raw_envs(self) -> list:
+        env = self.training_env
+        if hasattr(env, "envs"):
+            return [self._unwrap(e) for e in env.envs]
+        return [self._unwrap(env)]
+
     def _make_snapshot(self) -> FrozenCNNPartner:
         snap = FrozenCNNPartner(self.model.policy)
-        snap.set_env_ref(self._raw_env())
+        snap.set_env_ref(self._raw_envs()[0])
         return snap
 
     def _on_training_start(self) -> None:
         snap = self._make_snapshot()
         self.curriculum_partner.set_selfplay_partner(snap)
         self.last_snapshot_step = 0
-        self._raw_env().gym_partner = self.curriculum_partner
+        for env in self._raw_envs():
+            env.gym_partner = self.curriculum_partner
 
     def _on_rollout_start(self) -> None:
         if self.num_timesteps < self.self_play_steps:
@@ -253,6 +253,7 @@ class CNNCurriculumCallback(BaseCallback):
     def _on_step(self) -> bool:
         return True
 
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description="PPO + CNN learner + self-play curriculum + BC anneal")
@@ -261,30 +262,47 @@ def main() -> None:
     p.add_argument("--run-name", type=str, default="cnn_curriculum_v1")
     p.add_argument("--horizon", type=int, default=400)
     p.add_argument("--planner-cache-dir", type=str, default=".cache/overcooked_planners")
-    p.add_argument("--features-dim", type=int, default=32)
+    p.add_argument("--features-dim", type=int, default=64)
 
-    p.add_argument("--self-play-steps", type=int, default=150_000)
-    p.add_argument("--anneal-steps", type=int, default=150_000)
-    p.add_argument("--snapshot-freq", type=int, default=10_000)
-    p.add_argument("--bc-prob-start", type=float, default=0.10)
-    p.add_argument("--bc-prob-end", type=float, default=0.80)
+    p.add_argument("--self-play-steps", type=int, default=0,
+                   help="Steps of self-play before BC anneal (0=skip)")
+    p.add_argument("--anneal-steps", type=int, default=1_000_000)
+    p.add_argument("--total-timesteps", type=int, default=None)
+    p.add_argument("--snapshot-freq", type=int, default=50_000)
+    p.add_argument("--bc-prob-start", type=float, default=1.0,
+                   help="Always use BC partner (stable learning signal)")
+    p.add_argument("--bc-prob-end", type=float, default=1.0)
 
-    p.add_argument("--reward-shaping-start", type=float, default=0.3)
+    p.add_argument("--reward-shaping-start", type=float, default=1.0,
+                   help="Dense shaping needed since CNN starts from scratch")
     p.add_argument("--reward-shaping-end", type=float, default=0.0)
+    p.add_argument("--reward-clip", type=float, default=5.0)
 
-    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--n-envs", type=int, default=8)
+    p.add_argument("--lr", type=float, default=3e-4,
+                   help="Peak LR (linear decay to 0 over training)")
     p.add_argument("--n-steps", type=int, default=2048)
-    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--gae-lambda", type=float, default=0.95)
     p.add_argument("--clip-range", type=float, default=0.2)
-    p.add_argument("--ent-coef", type=float, default=0.01)
+    p.add_argument("--ent-coef", type=float, default=0.05,
+                   help="Higher entropy for CNN (learning from scratch)")
+    p.add_argument("--vf-coef", type=float, default=0.5)
+    p.add_argument("--max-grad-norm", type=float, default=0.5)
+    p.add_argument("--n-epochs", type=int, default=5,
+                   help="Fewer epochs to prevent overfitting per batch")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--player-idx", type=str, default="alternate",
+                   help="Which player slot the learner occupies: 0, 1, or 'alternate'")
     args = p.parse_args()
 
-    total_timesteps = args.self_play_steps + args.anneal_steps
+    total_timesteps = args.total_timesteps or (args.self_play_steps + args.anneal_steps)
 
-    # Get BC partner's featurized input dim
+    player_idx: int | str = args.player_idx
+    if player_idx not in ("alternate",):
+        player_idx = int(player_idx)
+
     temp_env = OvercookedRLWrapper(
         layout_name=args.layout, obs_mode="featurized",
         partner_obs_mode="featurized", horizon=args.horizon,
@@ -306,7 +324,7 @@ def main() -> None:
         anneal_steps=args.anneal_steps,
     )
 
-    env = OvercookedRLWrapper(
+    env_kwargs = dict(
         layout_name=args.layout,
         gym_partner=curriculum_partner,
         obs_mode="lossless",
@@ -314,32 +332,45 @@ def main() -> None:
         horizon=args.horizon,
         planner_cache_dir=args.planner_cache_dir,
         reward_shaping_coef=args.reward_shaping_start,
+        reward_clip=args.reward_clip,
+        player_idx=player_idx,
     )
 
-    check_env(env)
-    print(f"[cnn-curriculum] Learner obs: {env.observation_space.shape}")
+    if args.n_envs > 1:
+        env = make_overcooked_vec_env(n_envs=args.n_envs, **env_kwargs)
+    else:
+        env = OvercookedRLWrapper(**env_kwargs)
+        check_env(env)
+
+    print(f"[cnn-curriculum] Learner obs: lossless")
     print(f"[cnn-curriculum] BC partner input dim: {bc_input_dim}")
 
     run_dir = Path("trained_models/rl") / args.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    def linear_lr(progress_remaining: float) -> float:
+        return progress_remaining
+
     model = PPO(
         policy="MlpPolicy",
         env=env,
         verbose=1,
-        learning_rate=args.lr,
+        learning_rate=lambda prog: args.lr * linear_lr(prog),
         n_steps=args.n_steps,
         batch_size=args.batch_size,
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
         clip_range=args.clip_range,
         ent_coef=args.ent_coef,
+        vf_coef=args.vf_coef,
+        max_grad_norm=args.max_grad_norm,
+        n_epochs=args.n_epochs,
         seed=args.seed,
         tensorboard_log="./logs/ppo_cnn_curriculum",
         policy_kwargs=dict(
             features_extractor_class=OvercookedCNN,
             features_extractor_kwargs=dict(features_dim=args.features_dim),
-            net_arch=dict(pi=[], vf=[]),
+            net_arch=dict(pi=[64, 64], vf=[64, 64]),
             normalize_images=False,
         ),
     )
@@ -355,17 +386,25 @@ def main() -> None:
         start_coef=args.reward_shaping_start,
         end_coef=args.reward_shaping_end,
     )
+    reward_logger = EpisodeRewardLoggerCallback()
+    best_ckpt = BestModelCheckpoint(save_dir=str(run_dir))
 
     print(f"[cnn-curriculum] Training on {args.layout}")
-    print(f"  Stage 1 (self-play):  {args.self_play_steps:,} steps")
-    print(f"  Stage 2 (anneal):     {args.anneal_steps:,} steps "
+    print(f"  Player idx:           {player_idx}")
+    print(f"  Parallel envs:        {args.n_envs}")
+    print(f"  Self-play steps:      {args.self_play_steps:,}")
+    print(f"  Anneal steps:         {args.anneal_steps:,} "
           f"(BC prob {args.bc_prob_start:.0%} -> {args.bc_prob_end:.0%})")
     print(f"  Snapshot refresh:     every {args.snapshot_freq:,} steps")
     print(f"  Reward shaping:       {args.reward_shaping_start} -> {args.reward_shaping_end}")
+    print(f"  Reward clip:          {args.reward_clip}")
+    print(f"  LR / clip / ent:      {args.lr} (decay) / {args.clip_range} / {args.ent_coef}")
+    print(f"  Features dim:         {args.features_dim}")
+    print(f"  n_epochs:             {args.n_epochs}")
     print(f"  Total:                {total_timesteps:,} steps")
 
     model.learn(total_timesteps=total_timesteps,
-                callback=[curriculum_cb, shaping_cb],
+                callback=[curriculum_cb, shaping_cb, reward_logger, best_ckpt],
                 tb_log_name=args.run_name)
 
     save_path = run_dir / "final_model"
@@ -376,6 +415,7 @@ def main() -> None:
         "bc_checkpoint": args.bc_checkpoint,
         "layout": args.layout,
         "horizon": args.horizon,
+        "player_idx": str(player_idx),
         "self_play_steps": args.self_play_steps,
         "anneal_steps": args.anneal_steps,
         "snapshot_freq": args.snapshot_freq,
@@ -384,7 +424,9 @@ def main() -> None:
         "total_timesteps": total_timesteps,
         "reward_shaping_start": args.reward_shaping_start,
         "reward_shaping_end": args.reward_shaping_end,
+        "reward_clip": args.reward_clip,
         "features_dim": args.features_dim,
+        "n_envs": args.n_envs,
         "lr": args.lr,
         "n_steps": args.n_steps,
         "batch_size": args.batch_size,
@@ -392,6 +434,9 @@ def main() -> None:
         "gae_lambda": args.gae_lambda,
         "clip_range": args.clip_range,
         "ent_coef": args.ent_coef,
+        "vf_coef": args.vf_coef,
+        "max_grad_norm": args.max_grad_norm,
+        "n_epochs": args.n_epochs,
         "seed": args.seed,
         "obs_mode": "lossless",
         "partner_obs_mode": "featurized",

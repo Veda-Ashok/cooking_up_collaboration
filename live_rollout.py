@@ -45,6 +45,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--obs-mode", type=str, choices=["featurized", "lossless", "auto"],
                         default="auto", help="Observation mode for the RL learner (auto reads train_config.json)")
 
+    parser.add_argument("--player-idx", type=str, default="0",
+                        help="Which player slot the RL agent plays: 0, 1, or 'alternate'")
+    parser.add_argument("--self-play", action="store_true",
+                        help="Both players use the RL model (no BC partner needed)")
+
     parser.add_argument("--bc-hidden-dim", type=int, default=128)
     parser.add_argument("--bc-num-layers", type=int, default=1)
     parser.add_argument("--bc-dropout", type=float, default=0.1)
@@ -213,7 +218,11 @@ def main() -> None:
     obs_mode = args.obs_mode
     if obs_mode == "auto":
         obs_mode = _infer_obs_mode(checkpoint_path)
-    print(f"[live_rollout] obs_mode={obs_mode}")
+
+    player_idx: int | str = args.player_idx
+    if player_idx not in ("alternate",):
+        player_idx = int(player_idx)
+    print(f"[live_rollout] obs_mode={obs_mode}  player_idx={player_idx}  self_play={args.self_play}")
 
     env = OvercookedRLWrapper(
         layout_name=args.layout,
@@ -222,9 +231,9 @@ def main() -> None:
         reward_shaping_coef=0.0,
         obs_mode=obs_mode,
         partner_obs_mode="featurized",
+        player_idx=player_idx,
     )
 
-    # Get featurized input dim for the BC partner (always 96-D regardless of learner obs mode)
     if obs_mode != "featurized":
         dummy_state = env.mdp.get_standard_start_state()
         bc_input_dim = len(env.mdp.featurize_state(dummy_state, env.mlam)[0])
@@ -232,21 +241,26 @@ def main() -> None:
         bc_input_dim = int(env.observation_space.shape[0])
     num_actions = int(env.action_space.n)
 
-    partner_checkpoint = args.partner_checkpoint or _try_infer_partner_checkpoint(checkpoint_path)
-    if partner_checkpoint:
-        if not Path(partner_checkpoint).exists():
-            raise FileNotFoundError(f"Partner checkpoint not found: {partner_checkpoint}")
-        env.gym_partner = _load_bc_partner(
-            checkpoint_path=partner_checkpoint,
-            input_dim=bc_input_dim,
-            num_actions=num_actions,
-            bc_hidden_dim=args.bc_hidden_dim,
-            bc_num_layers=args.bc_num_layers,
-            bc_dropout=args.bc_dropout,
-            device="cpu",
-        )
-
     model, is_recurrent = _load_model(checkpoint_path=checkpoint_path, algo=algo, device=device)
+
+    if args.self_play:
+        from rl.self_play_partner import SB3SelfPlayPartner
+        env.gym_partner = SB3SelfPlayPartner(model, obs_mode=obs_mode)
+        print("[live_rollout] Using RL self-play partner")
+    else:
+        partner_checkpoint = args.partner_checkpoint or _try_infer_partner_checkpoint(checkpoint_path)
+        if partner_checkpoint:
+            if not Path(partner_checkpoint).exists():
+                raise FileNotFoundError(f"Partner checkpoint not found: {partner_checkpoint}")
+            env.gym_partner = _load_bc_partner(
+                checkpoint_path=partner_checkpoint,
+                input_dim=bc_input_dim,
+                num_actions=num_actions,
+                bc_hidden_dim=args.bc_hidden_dim,
+                bc_num_layers=args.bc_num_layers,
+                bc_dropout=args.bc_dropout,
+                device="cpu",
+            )
     configure_model_sampling_temperature(model, sampling_temperature)
 
     obs, _ = env.reset()

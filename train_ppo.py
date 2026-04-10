@@ -1,26 +1,15 @@
 """
-PPO Curriculum Training: Self-Play followed by Annealing to a BC Partner
+PPO fine-tuning from BC initialisation (featurized 96-D observations).
 
-Overview
---------
-This curriculum consists of two main stages:
-
-Stage 1 - Self-Play:
-    - The learner trains against a *frozen* snapshot of itself.
-    - The frozen snapshot is periodically refreshed every N steps.
-
-Stage 2 - Annealing:
-    - For each new episode, the partner is randomly chosen to be either:
-        * The current frozen self-play snapshot, or
-        * A pre-trained BC (behavioral cloning) partner.
-    - The probability of facing the BC partner increases linearly
-      from ``bc_prob_start`` to ``bc_prob_end``.
+The PPO policy is initialised from a BC checkpoint so it starts competent
+rather than random.  Training against the BC partner then refines the policy
+via RL reward.  Supports player-index alternation for symmetric play.
 
 Usage
 -----
-python -m rl.train_ppo_curriculum \
-    --bc-checkpoint trained_models/bc/bc_cramped_v1/best.pt \
-    --layout cramped_room \
+python train_ppo.py \\
+    --bc-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \\
+    --layout cramped_room \\
     --run-name curriculum_v1
 """
 import argparse
@@ -35,9 +24,17 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_checker import check_env
 
 from imitation.models.mlp import MLPPolicy
-from rl.bc_init_utils import load_checkpoint_state_dict, load_lstm_policy_from_checkpoint
-from rl.env_utils import OvercookedRLWrapper
-from rl.models.rl_mlp import RLActorCriticPolicy
+from rl.bc_init_utils import (
+    load_checkpoint_state_dict,
+    load_lstm_policy_from_checkpoint,
+    transfer_bc_mlp_to_sb3_policy,
+)
+from rl.callbacks import (
+    BestModelCheckpoint,
+    EpisodeRewardLoggerCallback,
+    LinearRewardShapingCallback,
+)
+from rl.env_utils import OvercookedRLWrapper, make_overcooked_vec_env
 
 
 def load_bc_partner(
@@ -94,10 +91,9 @@ def load_bc_partner(
     return partner
 
 
-
-# Frozen snapshot of an SB3 PPO policy's feature extractor + action head,
-# wrapped so the env can call partner(obs) -> logits.
 class FrozenSB3Partner(nn.Module):
+    """Frozen snapshot of an SB3 PPO policy's feature extractor + action head."""
+
     def __init__(self, sb3_policy: nn.Module):
         super().__init__()
         self.features_extractor: nn.Module | None = None
@@ -113,7 +109,6 @@ class FrozenSB3Partner(nn.Module):
                 k: v for k, v in module.__dict__.items()
                 if k not in ("_parameters", "_buffers", "_modules")
             })
-            sd = {k: v.detach().clone() for k, v in module.state_dict().items()}
             for k, v in module._parameters.items():
                 clone.register_parameter(k, nn.Parameter(v.detach().clone()) if v is not None else None)
             for k, v in module._buffers.items():
@@ -139,9 +134,9 @@ class FrozenSB3Partner(nn.Module):
         return self.action_net(latent_pi)
 
 
-
-# Curriculum partner: picks BC or self-play snapshot each episode
 class CurriculumPartner(nn.Module):
+    """Picks BC or self-play snapshot each episode based on curriculum phase."""
+
     def __init__(
         self,
         bc_partner: nn.Module,
@@ -156,7 +151,7 @@ class CurriculumPartner(nn.Module):
 
         self._bc_is_lstm = hasattr(bc_partner, "lstm")
         if self._bc_is_lstm:
-            self.lstm = True  # expose so env wrapper detects LSTM-style partner
+            self.lstm = True
 
         self.phase = "self_play"
         self.bc_prob_start = bc_prob_start
@@ -197,25 +192,23 @@ class CurriculumPartner(nn.Module):
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         if self._active_is_lstm():
-            # Active partner is LSTM -- expects [batch, seq_len, input_dim]
             if obs.ndim == 2:
                 obs = obs.unsqueeze(1)
             return self.active_partner(obs)
-        # Active partner is MLP/SB3 -- expects [batch, input_dim]
         if obs.ndim == 3:
             obs = obs[:, -1, :]
         return self.active_partner(obs)
 
 
-
-# SB3 callback that drives the curriculum schedule
 class CurriculumCallback(BaseCallback):
+    """SB3 callback that drives the curriculum schedule."""
+
     def __init__(
         self,
         curriculum_partner: CurriculumPartner,
-        self_play_steps: int = 150_000,
-        anneal_steps: int = 150_000,
-        snapshot_freq: int = 10_000,
+        self_play_steps: int = 0,
+        anneal_steps: int = 500_000,
+        snapshot_freq: int = 25_000,
         verbose: int = 1,
     ):
         super().__init__(verbose)
@@ -225,18 +218,24 @@ class CurriculumCallback(BaseCallback):
         self.snapshot_freq = snapshot_freq
         self.last_snapshot_step = 0
 
-    def _raw_env(self) -> OvercookedRLWrapper:
-        env = self.training_env
-        if hasattr(env, "envs"):
-            return env.envs[0]
+    @staticmethod
+    def _unwrap(env):
+        while hasattr(env, "env") and not isinstance(env, OvercookedRLWrapper):
+            env = env.env
         return env
 
+    def _raw_envs(self) -> list:
+        env = self.training_env
+        if hasattr(env, "envs"):
+            return [self._unwrap(e) for e in env.envs]
+        return [self._unwrap(env)]
+
     def _on_training_start(self) -> None:
-        self.curriculum_partner.set_selfplay_partner(
-            FrozenSB3Partner(self.model.policy)
-        )
+        snap = FrozenSB3Partner(self.model.policy)
+        self.curriculum_partner.set_selfplay_partner(snap)
         self.last_snapshot_step = 0
-        self._raw_env().gym_partner = self.curriculum_partner
+        for env in self._raw_envs():
+            env.gym_partner = self.curriculum_partner
 
     def _on_rollout_start(self) -> None:
         if self.num_timesteps < self.self_play_steps:
@@ -248,9 +247,8 @@ class CurriculumCallback(BaseCallback):
             )
 
         if (self.num_timesteps - self.last_snapshot_step) >= self.snapshot_freq:
-            self.curriculum_partner.set_selfplay_partner(
-                FrozenSB3Partner(self.model.policy)
-            )
+            snap = FrozenSB3Partner(self.model.policy)
+            self.curriculum_partner.set_selfplay_partner(snap)
             self.last_snapshot_step = self.num_timesteps
 
         self.logger.record("curriculum/bc_prob", float(self.curriculum_partner.current_bc_prob()))
@@ -260,67 +258,92 @@ class CurriculumCallback(BaseCallback):
         return True
 
 
+def _load_bc_config(checkpoint_path: str, config_path: str | None) -> dict:
+    if config_path and Path(config_path).exists():
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    candidate = Path(checkpoint_path).parent / "config.json"
+    if candidate.exists():
+        with open(candidate, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="PPO curriculum: self-play then BC anneal")
+    p = argparse.ArgumentParser(
+        description="PPO fine-tuning from BC init, with optional curriculum")
     p.add_argument("--bc-checkpoint", type=str, required=True,
-                   help="Path to BC best.pt for the partner")
+                   help="Path to BC best.pt (used as partner AND to init PPO weights)")
     p.add_argument("--bc-config", type=str, default=None,
                    help="Path to BC config.json (auto-detected if next to checkpoint)")
-    p.add_argument("--bc-hidden", type=str, default=None,
-                   help="BC hidden dims, e.g. '64,64' (auto-detected from config)")
+    p.add_argument("--no-bc-init", action="store_true",
+                   help="Skip BC weight init (train PPO from scratch)")
     p.add_argument("--layout", type=str, default="cramped_room")
-    p.add_argument("--horizon", type=int, default=400,
-                   help="Max timesteps per episode (default 400, paper uses 400)")
+    p.add_argument("--horizon", type=int, default=400)
     p.add_argument("--planner-cache-dir", type=str, default=".cache/overcooked_planners")
-    p.add_argument("--reward-shaping-coef", type=float, default=3,
-                   help="Multiplier for event-based shaped reward (0=sparse only, 1.0=full shaping)")
 
-    p.add_argument("--self-play-steps", type=int, default=150_000)
-    p.add_argument("--anneal-steps", type=int, default=150_000)
-    p.add_argument("--snapshot-freq", type=int, default=10_000)
-    p.add_argument("--bc-prob-start", type=float, default=0.10)
-    p.add_argument("--bc-prob-end", type=float, default=0.80)
+    p.add_argument("--reward-shaping-start", type=float, default=0.0,
+                   help="Reward shaping coef at start (0=sparse only, recommended for BC init)")
+    p.add_argument("--reward-shaping-end", type=float, default=0.0)
+    p.add_argument("--reward-clip", type=float, default=5.0)
 
-    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--self-play-steps", type=int, default=0,
+                   help="Steps of self-play before BC anneal (0=skip)")
+    p.add_argument("--anneal-steps", type=int, default=1_000_000)
+    p.add_argument("--total-timesteps", type=int, default=None)
+    p.add_argument("--snapshot-freq", type=int, default=25_000)
+    p.add_argument("--bc-prob-start", type=float, default=1.0,
+                   help="BC partner probability at start of anneal phase")
+    p.add_argument("--bc-prob-end", type=float, default=1.0)
+
+    p.add_argument("--n-envs", type=int, default=8)
+    p.add_argument("--lr", type=float, default=1e-4,
+                   help="Learning rate (linear decay to 0 over training)")
     p.add_argument("--n-steps", type=int, default=2048)
-    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--gae-lambda", type=float, default=0.95)
-    p.add_argument("--clip-range", type=float, default=0.2)
-    p.add_argument("--ent-coef", type=float, default=0.1)
+    p.add_argument("--clip-range", type=float, default=0.15)
+    p.add_argument("--ent-coef", type=float, default=0.02,
+                   help="Entropy coef (explore slightly beyond BC)")
+    p.add_argument("--vf-coef", type=float, default=0.5)
+    p.add_argument("--max-grad-norm", type=float, default=0.5)
+    p.add_argument("--n-epochs", type=int, default=5,
+                   help="Fewer epochs per update to prevent overfit per batch")
     p.add_argument("--seed", type=int, default=42)
+
+    p.add_argument("--player-idx", type=str, default="alternate",
+                   help="Which player slot the learner occupies: 0, 1, or 'alternate' (random each episode)")
 
     p.add_argument("--outdir", type=str, default="trained_models/rl")
     p.add_argument("--run-name", type=str, default="ppo_curriculum")
     p.add_argument("--tensorboard-log", type=str, default="./logs/ppo_curriculum")
-    p.add_argument("--export-agent-name", type=str, default=None,
-                   help="If set, copy final model into webapp agents folder")
+    p.add_argument("--export-agent-name", type=str, default=None)
     return p.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+    total_timesteps = args.total_timesteps or (args.self_play_steps + args.anneal_steps)
 
-    total_timesteps = args.self_play_steps + args.anneal_steps
+    player_idx: int | str = args.player_idx
+    if player_idx not in ("alternate",):
+        player_idx = int(player_idx)
 
-    env = OvercookedRLWrapper(
-        layout_name=args.layout,
-        horizon=args.horizon,
+    bc_cfg = _load_bc_config(args.bc_checkpoint, args.bc_config)
+    bc_hidden = list(bc_cfg.get("mlp_hidden", [64, 64]))
+
+    probe_env = OvercookedRLWrapper(
+        layout_name=args.layout, horizon=args.horizon,
         planner_cache_dir=args.planner_cache_dir,
-        reward_shaping_coef=args.reward_shaping_coef,
     )
-    obs_dim = env.observation_space.shape[0]
-    num_actions = env.action_space.n
-
-    bc_hidden = None
-    if args.bc_hidden:
-        bc_hidden = [int(x.strip()) for x in args.bc_hidden.split(",")]
+    obs_dim = probe_env.observation_space.shape[0]
+    num_actions = probe_env.action_space.n
+    del probe_env
 
     bc_partner = load_bc_partner(
-        checkpoint_path=args.bc_checkpoint,
-        input_dim=obs_dim,
-        num_actions=num_actions,
-        hidden_dims=bc_hidden,
+        checkpoint_path=args.bc_checkpoint, input_dim=obs_dim,
+        num_actions=num_actions, hidden_dims=bc_hidden,
         config_path=args.bc_config,
     )
 
@@ -330,44 +353,97 @@ def main() -> None:
         bc_prob_end=args.bc_prob_end,
         anneal_steps=args.anneal_steps,
     )
-    env.gym_partner = curriculum_partner
 
-    check_env(env)
+    if args.n_envs > 1:
+        env = make_overcooked_vec_env(
+            n_envs=args.n_envs, layout_name=args.layout,
+            gym_partner=curriculum_partner, horizon=args.horizon,
+            planner_cache_dir=args.planner_cache_dir,
+            reward_shaping_coef=args.reward_shaping_start,
+            reward_clip=args.reward_clip,
+            player_idx=player_idx,
+        )
+    else:
+        env = OvercookedRLWrapper(
+            layout_name=args.layout, gym_partner=curriculum_partner,
+            horizon=args.horizon, planner_cache_dir=args.planner_cache_dir,
+            reward_shaping_coef=args.reward_shaping_start,
+            reward_clip=args.reward_clip,
+            player_idx=player_idx,
+        )
+        check_env(env)
+
+    run_dir = Path(args.outdir) / args.run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    def linear_lr(progress_remaining: float) -> float:
+        return progress_remaining
 
     model = PPO(
-        policy=RLActorCriticPolicy,
+        policy="MlpPolicy",
         env=env,
         verbose=1,
-        learning_rate=args.lr,
+        learning_rate=lambda prog: args.lr * linear_lr(prog),
         n_steps=args.n_steps,
         batch_size=args.batch_size,
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
         clip_range=args.clip_range,
         ent_coef=args.ent_coef,
+        vf_coef=args.vf_coef,
+        max_grad_norm=args.max_grad_norm,
+        n_epochs=args.n_epochs,
         seed=args.seed,
         tensorboard_log=args.tensorboard_log,
+        policy_kwargs=dict(
+            net_arch=dict(pi=bc_hidden, vf=bc_hidden),
+        ),
     )
 
-    callback = CurriculumCallback(
+    if not args.no_bc_init:
+        bc_state_dict = load_checkpoint_state_dict(
+            args.bc_checkpoint, map_location="cpu")
+        report = transfer_bc_mlp_to_sb3_policy(
+            model.policy, bc_state_dict, hidden_dims=bc_hidden)
+        print(f"[bc-init] Transferred {report['loaded_count']} weight tensors "
+              f"from BC checkpoint ({report['skipped_count']} skipped)")
+        if report["skipped_keys"]:
+            for sk in report["skipped_keys"]:
+                print(f"  SKIP: {sk}")
+    else:
+        print("[bc-init] Skipped (--no-bc-init)")
+
+    curriculum_cb = CurriculumCallback(
         curriculum_partner=curriculum_partner,
         self_play_steps=args.self_play_steps,
         anneal_steps=args.anneal_steps,
         snapshot_freq=args.snapshot_freq,
-        verbose=1,
     )
+    shaping_cb = LinearRewardShapingCallback(
+        total_timesteps=total_timesteps,
+        start_coef=args.reward_shaping_start,
+        end_coef=args.reward_shaping_end,
+    )
+    reward_logger = EpisodeRewardLoggerCallback()
+    best_ckpt = BestModelCheckpoint(save_dir=str(run_dir))
 
-    print(f"Training PPO curriculum on {args.layout}")
-    print(f"  Stage 1 (self-play):  {args.self_play_steps:,} steps")
-    print(f"  Stage 2 (anneal):     {args.anneal_steps:,} steps "
+    print(f"Training PPO on {args.layout}")
+    print(f"  BC init:              {'YES' if not args.no_bc_init else 'no'}")
+    print(f"  BC hidden dims:       {bc_hidden}")
+    print(f"  Player idx:           {player_idx}")
+    print(f"  Parallel envs:        {args.n_envs}")
+    print(f"  Self-play steps:      {args.self_play_steps:,}")
+    print(f"  Anneal steps:         {args.anneal_steps:,} "
           f"(BC prob {args.bc_prob_start:.0%} -> {args.bc_prob_end:.0%})")
-    print(f"  Snapshot refresh:     every {args.snapshot_freq:,} steps")
+    print(f"  Reward shaping:       {args.reward_shaping_start} -> {args.reward_shaping_end}")
+    print(f"  LR / clip / ent:      {args.lr} / {args.clip_range} / {args.ent_coef}")
     print(f"  Total:                {total_timesteps:,} steps")
 
-    model.learn(total_timesteps=total_timesteps, callback=callback)
-
-    run_dir = Path(args.outdir) / args.run_name
-    run_dir.mkdir(parents=True, exist_ok=True)
+    model.learn(
+        total_timesteps=total_timesteps,
+        callback=[curriculum_cb, shaping_cb, reward_logger, best_ckpt],
+        tb_log_name=args.run_name,
+    )
     save_path = run_dir / "final_model.zip"
     model.save(str(save_path))
     print(f"Model saved to {save_path}")
@@ -375,12 +451,19 @@ def main() -> None:
     train_config = {
         "layout": args.layout,
         "bc_checkpoint": args.bc_checkpoint,
+        "bc_init": not args.no_bc_init,
+        "bc_hidden": bc_hidden,
+        "player_idx": str(player_idx),
         "self_play_steps": args.self_play_steps,
         "anneal_steps": args.anneal_steps,
         "snapshot_freq": args.snapshot_freq,
         "bc_prob_start": args.bc_prob_start,
         "bc_prob_end": args.bc_prob_end,
         "total_timesteps": total_timesteps,
+        "reward_shaping_start": args.reward_shaping_start,
+        "reward_shaping_end": args.reward_shaping_end,
+        "reward_clip": args.reward_clip,
+        "n_envs": args.n_envs,
         "lr": args.lr,
         "n_steps": args.n_steps,
         "batch_size": args.batch_size,
@@ -388,13 +471,13 @@ def main() -> None:
         "gae_lambda": args.gae_lambda,
         "clip_range": args.clip_range,
         "ent_coef": args.ent_coef,
+        "vf_coef": args.vf_coef,
+        "max_grad_norm": args.max_grad_norm,
+        "n_epochs": args.n_epochs,
         "seed": args.seed,
-        "reward_shaping_coef": args.reward_shaping_coef,
     }
-    config_path = run_dir / "train_config.json"
-    with open(config_path, "w", encoding="utf-8") as f:
+    with open(run_dir / "train_config.json", "w", encoding="utf-8") as f:
         json.dump(train_config, f, indent=2)
-    print(f"Config saved to {config_path}")
 
     if args.export_agent_name:
         agent_dir = Path("webapp/server/static/assets/agents") / args.export_agent_name
@@ -404,7 +487,7 @@ def main() -> None:
         manifest = {
             "type": "rl_torch",
             "algo": "ppo",
-            "policy": "RLActorCriticPolicy",
+            "policy": "MlpPolicy",
             "checkpoint": "final_model.zip",
             "supported_layouts": [args.layout],
             "input_dim": obs_dim,

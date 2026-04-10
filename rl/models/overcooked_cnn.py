@@ -7,22 +7,25 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 class OvercookedCNN(BaseFeaturesExtractor):
     """Paper-style CNN for lossless (H, W, C) Overcooked state encodings.
 
-    Architecture: three same-padding conv layers (25 filters each) followed
-    by a small MLP that outputs a ``features_dim``-sized embedding.
+    Architecture: three same-padding conv layers followed by a two-layer
+    MLP that outputs a ``features_dim``-sized embedding.
     SB3 feeds this embedding into the policy/value heads.
     """
 
-    def __init__(self, observation_space: gym.spaces.Box, features_dim: int = 32):
+    def __init__(self, observation_space: gym.spaces.Box, features_dim: int = 64,
+                 n_filters: int = 25, fc_hidden: int | None = None):
         super().__init__(observation_space, features_dim)
 
         h, w, c = observation_space.shape
+        if fc_hidden is None:
+            fc_hidden = max(64, features_dim)
 
         self.conv = nn.Sequential(
-            nn.Conv2d(c, 25, kernel_size=5, stride=1, padding=2),
+            nn.Conv2d(c, n_filters, kernel_size=5, stride=1, padding=2),
             nn.ReLU(),
-            nn.Conv2d(25, 25, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(n_filters, n_filters, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(25, 25, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(n_filters, n_filters, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
         )
 
@@ -33,11 +36,9 @@ class OvercookedCNN(BaseFeaturesExtractor):
 
         self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(n_flatten, 32),
+            nn.Linear(n_flatten, fc_hidden),
             nn.ReLU(),
-            nn.Linear(32, 32),
-            nn.ReLU(),
-            nn.Linear(32, features_dim),
+            nn.Linear(fc_hidden, features_dim),
             nn.ReLU(),
         )
 
