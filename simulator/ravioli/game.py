@@ -459,6 +459,7 @@ class Pot(Holdable, IngredientHolder):
                 soup.add_ingredient(obj)
                 self.level.game_objects.append(soup)
                 self.held_object = soup
+                soup.parent = self
                 self.reset_parent_stove_progress()
                 return True
             elif isinstance(obj, IngredientHolder) and obj.held_object is not None and isinstance(obj.held_object, Soup):
@@ -625,7 +626,7 @@ class DryingRack(ObjectHolder):
 class Sink(Interactable):
     def __init__(self, level: "Level", position: b2Vec2):
         super().__init__(level)
-        self.total_time = 5.0
+        self.total_time = 8.0
         self.body = level.world.CreateStaticBody(position=position)
         self.body.CreateFixture(
             shape=b2PolygonShape(box=(TABLETOP_SIZE.x / 2, TABLETOP_SIZE.y / 2)),
@@ -1178,22 +1179,44 @@ NAME_TO_OBJECT = {v: k for k, v in OBJECT_TO_NAME.items()}
 
 def create_game_state(level: Level) -> dict:
         state: dict[str, list[dict[str, object]]] = {"players": [], "objects": []}
+        entity_ids: dict[GameObject, str] = {}
+        name_counts: dict[str, int] = {}
+
         for player in sorted(level.players, key=lambda player: player.player_num):
-            state["players"].append(
-                {
-                    "name": f"player_{player.player_num}",
-                    "position": physics_to_world(player.body.position),
-                }
-            )
+            entity_ids[player] = f"player_{player.player_num}"
+
+        for game_object in level.game_objects:
+            if isinstance(game_object, Player):
+                continue
+            object_name = OBJECT_TO_NAME[type(game_object)]
+            object_index = name_counts.get(object_name, 0)
+            name_counts[object_name] = object_index + 1
+            entity_ids[game_object] = f"{object_name}_{object_index}"
+
+        for player in sorted(level.players, key=lambda player: player.player_num):
+            player_state = {
+                "id": entity_ids[player],
+                "name": entity_ids[player],
+                "position": physics_to_world(player.body.position),
+            }
+            if player.held_object is not None:
+                player_state["held_object_id"] = entity_ids.get(player.held_object)
+                player_state["held_object_name"] = OBJECT_TO_NAME[type(player.held_object)]
+            state["players"].append(player_state)
 
         for game_object in level.game_objects:
             if isinstance(game_object, Player):
                 continue
 
             object_state: dict[str, object] = {
+                "id": entity_ids[game_object],
                 "name": OBJECT_TO_NAME[type(game_object)],
                 "position": physics_to_world(game_object.body.position),
             }
+            parent = getattr(game_object, "parent", None)
+            if parent is not None:
+                object_state["parent_id"] = entity_ids.get(parent)
+                object_state["parent_name"] = entity_ids[parent] if isinstance(parent, Player) else OBJECT_TO_NAME[type(parent)]
             if isinstance(game_object, (Onion, Soup)):
                 object_state["progress"] = game_object.progress
             if isinstance(game_object, Soup):
@@ -1202,8 +1225,16 @@ def create_game_state(level: Level) -> dict:
                 ]
                 while len(object_state["ingredients"]) < 3:
                     object_state["ingredients"].append(None)
+            if isinstance(game_object, ObjectHolder) and game_object.held_object is not None:
+                object_state["held_object_id"] = entity_ids.get(game_object.held_object)
+                object_state["held_object_name"] = OBJECT_TO_NAME[type(game_object.held_object)]
+            if isinstance(game_object, DryingRack):
+                object_state["plate_ids"] = [entity_ids[plate] for plate in game_object.plates]
+                object_state["plate_count"] = len(game_object.plates)
             if isinstance(game_object, StackedDirtyPlates):
                 object_state["plate_count"] = game_object.plate_count
+            if isinstance(game_object, Dispenser) and isinstance(game_object.held_object, Onion):
+                object_state["ingredient"] = "onion"
 
             state["objects"].append(object_state)
 
