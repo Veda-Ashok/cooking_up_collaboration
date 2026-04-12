@@ -1,5 +1,4 @@
 using BepInEx;
-using BepInEx.Configuration;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -18,6 +17,13 @@ namespace ExtractionMod
     [BepInPlugin("com.yourname.extractionmod", "Extraction Mod", "1.0.0")]
     public class ExtractionModPlugin : BaseUnityPlugin
     {
+        private const bool WRITE_JSON_FILES = true;
+        private const float PUBLISH_INTERVAL_SECONDS = 0.03f;
+        private const float STATUS_LOG_INTERVAL_SECONDS = 5.0f;
+        private const bool ENABLE_HTTP_STREAM = true;
+        private const string HTTP_STREAM_BASE_URL = "http://127.0.0.1:8765";
+        private const int HTTP_STREAM_TIMEOUT_MILLISECONDS = 250;
+
         private Dictionary<Type, MonoBehaviour[]> _trackedObjects = [];
         private Dictionary<string, string> _objectTypeMapping = new()
         {
@@ -60,12 +66,6 @@ namespace ExtractionMod
         private float _lastStreamErrorLogTime;
         private bool _streamWorkerActive;
         private readonly object _streamLock = new object();
-        private ConfigEntry<bool> _writeJsonFilesConfig;
-        private ConfigEntry<float> _publishIntervalSecondsConfig;
-        private ConfigEntry<float> _statusLogIntervalSecondsConfig;
-        private ConfigEntry<bool> _enableHttpStreamConfig;
-        private ConfigEntry<string> _httpStreamBaseUrlConfig;
-        private ConfigEntry<int> _httpStreamTimeoutMillisecondsConfig;
 
         private sealed class PlayerCandidate
         {
@@ -87,12 +87,6 @@ namespace ExtractionMod
         private void Awake()
         {
             _debugLogPath = Path.Combine(Paths.GameRootPath, "extraction_mod_debug.log");
-            _writeJsonFilesConfig = Config.Bind("Output", "WriteJsonFiles", true, "Write state.json and level.json to disk.");
-            _publishIntervalSecondsConfig = Config.Bind("Output", "PublishIntervalSeconds", 0.1f, "Seconds between state publishes.");
-            _statusLogIntervalSecondsConfig = Config.Bind("Diagnostics", "StatusLogIntervalSeconds", 5.0f, "Seconds between diagnostic status logs.");
-            _enableHttpStreamConfig = Config.Bind("Streaming", "EnableHttpStream", true, "POST state and level JSON to the configured HTTP endpoint.");
-            _httpStreamBaseUrlConfig = Config.Bind("Streaming", "HttpStreamBaseUrl", "http://127.0.0.1:8765", "Base URL for the Python receiver.");
-            _httpStreamTimeoutMillisecondsConfig = Config.Bind("Streaming", "HttpTimeoutMilliseconds", 250, "HTTP timeout for localhost streaming.");
             ServicePointManager.Expect100Continue = false;
             SafeLog("Awake");
         }
@@ -129,7 +123,7 @@ namespace ExtractionMod
 
                 _publishTimer += Time.deltaTime;
                 _logTimer += Time.deltaTime;
-                float publishIntervalSeconds = Mathf.Max(_publishIntervalSecondsConfig.Value, 0.01f);
+                float publishIntervalSeconds = Mathf.Max(PUBLISH_INTERVAL_SECONDS, 0.01f);
                 if (_publishTimer < publishIntervalSeconds)
                 {
                     return;
@@ -149,29 +143,29 @@ namespace ExtractionMod
                 ComputeState(n, m, max_x, min_x, max_z, min_z);
                 _gameloop++;
 
-                string stateJson = JsonGenerator.GenerateGameJson(_players, _objects, _writeJsonFilesConfig.Value);
+                string stateJson = JsonGenerator.GenerateGameJson(_players, _objects, WRITE_JSON_FILES);
                 string levelJson = JsonGenerator.GenerateLevelJson(_layoutObjects, _playerStartPositions, false);
                 bool levelChanged = !string.Equals(_lastLevelJson, levelJson, StringComparison.Ordinal);
                 if (levelChanged)
                 {
                     _lastLevelJson = levelJson;
-                    if (_writeJsonFilesConfig.Value)
+                    if (WRITE_JSON_FILES)
                     {
                         File.WriteAllText("level.json", levelJson);
                     }
                 }
 
-                if (_enableHttpStreamConfig.Value)
+                if (ENABLE_HTTP_STREAM)
                 {
                     EnqueueStreamPayloads(stateJson, levelChanged ? levelJson : null);
                 }
 
-                float statusLogIntervalSeconds = Mathf.Max(_statusLogIntervalSecondsConfig.Value, 0.1f);
+                float statusLogIntervalSeconds = Mathf.Max(STATUS_LOG_INTERVAL_SECONDS, 0.1f);
                 if (_logTimer >= statusLogIntervalSeconds)
                 {
                     _logTimer = 0f;
                     LogOrderDebugInfo();
-                    string streamTarget = _enableHttpStreamConfig.Value ? _httpStreamBaseUrlConfig.Value : "disabled";
+                    string streamTarget = ENABLE_HTTP_STREAM ? HTTP_STREAM_BASE_URL : "disabled";
                     Logger.LogInfo($"ComputeState ok loop={_gameloop} players={_players.Count} objects={_objects.Count} stream={streamTarget}");
                     SafeLog($"ComputeState ok loop={_gameloop} players={_players.Count} objects={_objects.Count} stream={streamTarget}");
                 }
@@ -254,7 +248,7 @@ namespace ExtractionMod
 
             try
             {
-                string baseUrl = (_httpStreamBaseUrlConfig.Value ?? string.Empty).TrimEnd('/');
+                string baseUrl = (HTTP_STREAM_BASE_URL ?? string.Empty).TrimEnd('/');
                 if (string.IsNullOrEmpty(baseUrl))
                 {
                     return;
@@ -265,7 +259,7 @@ namespace ExtractionMod
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(endpoint);
                 request.Method = "POST";
                 request.ContentType = "application/json";
-                request.Timeout = Math.Max(_httpStreamTimeoutMillisecondsConfig.Value, 50);
+                request.Timeout = Math.Max(HTTP_STREAM_TIMEOUT_MILLISECONDS, 50);
                 request.ReadWriteTimeout = request.Timeout;
                 request.ContentLength = payload.Length;
 
