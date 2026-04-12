@@ -1,129 +1,224 @@
 using System.Collections.Generic;
-using UnityEngine;
+using System.Globalization;
 using System.IO;
+using System.Text;
 
-public static class JsonGenerator{
-
-    public static string GenerateGameJson(List<Player> players, List<Element> objects, List<Order> orders, string[,] layoutGrid,
-                                          string layoutName, float timeLeft, float timeElapsed, int gameloop )
+public static class JsonGenerator
+{
+    public static string GenerateGameJson(List<PlayerStateDto> players, List<ObjectStateDto> objects)
     {
-        //Prepare and Stringify the GameState
-        GameState internalState = new()
+        ExtractedStateDto state = new()
         {
-            players = players,
-            objects = objects,
-            all_orders = orders,
-            timestep = gameloop-1
-        };
-        string stateString = ConvertGameStateToString(internalState);
-
-        string layoutString = ConvertLayoutToString(layoutGrid);
-
-        GameRecord record = new()
-        {
-            state = stateString,
-            time_left = timeLeft,
-            score = 0,
-            time_elapsed = timeElapsed,
-            cur_gameloop = gameloop,
-            layout = layoutString,
-            layout_name = layoutName,
-            player_0_is_human = true,
-            player_1_is_human = true
+            players = players ?? new List<PlayerStateDto>(),
+            objects = objects ?? new List<ObjectStateDto>()
         };
 
-        string json = JsonUtility.ToJson(record, true);
-        File.WriteAllText("state.json", json); //TODO: Change this to the desired output path
-        return stateString;
+        string json = ConvertStateToString(state);
+        File.WriteAllText("state.json", json);
+        return json;
     }
 
-    public static void GenerateLevelJson(List<LayoutObject> layoutObjects, List<float[]> playerStartPositions) {
+    public static void GenerateLevelJson(List<LayoutObject> layoutObjects, List<float[]> playerStartPositions)
+    {
         string layoutString = ConvertLevelLayoutToString(layoutObjects);
         string playerStartsString = ConvertPlayerStartPositionsToString(playerStartPositions);
         string json = "{\"layout\": " + layoutString + ", \"player_starts\": " + playerStartsString + "}";
         File.WriteAllText("level.json", json);
     }
 
-    private static string ConvertLayoutToString(string[,] grid) {
-        List<string> rows = [];
-        for (int i = 0; i < grid.GetLength(0); i++) {
-            List<string> row = [];
-            for (int j = 0; j < grid.GetLength(1); j++) {
-                row.Add(grid[i, j]);
+    private static string ConvertStateToString(ExtractedStateDto state)
+    {
+        List<string> playerEntries = new List<string>();
+        foreach (PlayerStateDto player in state.players)
+        {
+            StringBuilder builder = new StringBuilder();
+            builder.Append("{");
+            builder.Append("\"id\": \"").Append(EscapeJsonString(player.id)).Append("\"");
+            builder.Append(", \"name\": \"").Append(EscapeJsonString(player.name)).Append("\"");
+            builder.Append(", \"position\": ").Append(SerializeFloatArray(player.position));
+
+            if (!string.IsNullOrEmpty(player.held_object_id))
+            {
+                builder.Append(", \"held_object_id\": \"").Append(EscapeJsonString(player.held_object_id)).Append("\"");
             }
-            rows.Add("[\"" + string.Join("\", \"", [..row]) + "\"]");
+
+            if (!string.IsNullOrEmpty(player.held_object_name))
+            {
+                builder.Append(", \"held_object_name\": \"").Append(EscapeJsonString(player.held_object_name)).Append("\"");
+            }
+
+            builder.Append("}");
+            playerEntries.Add(builder.ToString());
         }
-        return "[" + string.Join(", ", [.. rows]) + "]";
+
+        List<string> objectEntries = new List<string>();
+        foreach (ObjectStateDto obj in state.objects)
+        {
+            StringBuilder builder = new StringBuilder();
+            builder.Append("{");
+            builder.Append("\"id\": \"").Append(EscapeJsonString(obj.id)).Append("\"");
+            builder.Append(", \"name\": \"").Append(EscapeJsonString(obj.name)).Append("\"");
+            builder.Append(", \"position\": ").Append(SerializeFloatArray(obj.position));
+
+            if (!string.IsNullOrEmpty(obj.parent_id))
+            {
+                builder.Append(", \"parent_id\": \"").Append(EscapeJsonString(obj.parent_id)).Append("\"");
+            }
+
+            if (!string.IsNullOrEmpty(obj.parent_name))
+            {
+                builder.Append(", \"parent_name\": \"").Append(EscapeJsonString(obj.parent_name)).Append("\"");
+            }
+
+            if (!string.IsNullOrEmpty(obj.held_object_id))
+            {
+                builder.Append(", \"held_object_id\": \"").Append(EscapeJsonString(obj.held_object_id)).Append("\"");
+            }
+
+            if (!string.IsNullOrEmpty(obj.held_object_name))
+            {
+                builder.Append(", \"held_object_name\": \"").Append(EscapeJsonString(obj.held_object_name)).Append("\"");
+            }
+
+            if (obj.progress.HasValue)
+            {
+                builder.Append(", \"progress\": ").Append(FormatFloat(obj.progress.Value));
+            }
+
+            if (!string.IsNullOrEmpty(obj.cooking_state))
+            {
+                builder.Append(", \"cooking_state\": \"").Append(EscapeJsonString(obj.cooking_state)).Append("\"");
+            }
+
+            if (obj.ingredients != null)
+            {
+                builder.Append(", \"ingredients\": ").Append(SerializeStringArrayAllowNulls(obj.ingredients));
+            }
+
+            if (obj.plate_ids != null)
+            {
+                builder.Append(", \"plate_ids\": ").Append(SerializeStringArray(obj.plate_ids));
+            }
+
+            if (obj.plate_count.HasValue)
+            {
+                builder.Append(", \"plate_count\": ").Append(obj.plate_count.Value.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (!string.IsNullOrEmpty(obj.ingredient))
+            {
+                builder.Append(", \"ingredient\": \"").Append(EscapeJsonString(obj.ingredient)).Append("\"");
+            }
+
+            builder.Append("}");
+            objectEntries.Add(builder.ToString());
+        }
+
+        return "{\"players\": [" + string.Join(", ", playerEntries.ToArray()) + "], \"objects\": [" + string.Join(", ", objectEntries.ToArray()) + "]}";
     }
 
-    private static string ConvertGameStateToString(GameState gs) {
-        // 1. Serialize Players
-        List<string> playerEntries = [];
-        foreach (var p in gs.players) {
-            playerEntries.Add($"{{\"position\": [{p.position[0]}, {p.position[1]}], \"orientation\": [{p.orientation[0]}, {p.orientation[1]}], \"held_object\": \"{p.held_object ?? ""}\"}}");
-        }
-        string playersJson = "[" + string.Join(", ", [..playerEntries]) + "]";
-
-        // 2. Serialize Objects (Elements)
-        List<string> objectEntries = [];
-        foreach (var obj in gs.objects) {
-            objectEntries.Add($"{{\"name\": \"{obj.name}\", \"position\": [{obj.position[0]}, {obj.position[1]}]}}");
-        }
-        string objectsJson = "[" + string.Join(", ", [..objectEntries]) + "]";
-
-        // 3. Serialize Orders
-        List<string> orderEntries = [];
-        foreach (var order in gs.all_orders) {
-            string ingredients = "[\"" + string.Join("\", \"", order.ingredients) + "\"]";
-            orderEntries.Add($"{{\"ingredients\": {ingredients}}}");
-        }
-        string ordersJson = "[" + string.Join(", ", [..orderEntries]) + "]";
-
-        // 4. Combine into final GameState JSON object
-        return $"{{\"players\": {playersJson}, \"objects\": {objectsJson}, \"all_orders\": {ordersJson}, \"timestep\": {gs.timestep}}}";
-    }
-
-    private static string ConvertLevelLayoutToString(List<LayoutObject> layoutObjects) {
-        if (layoutObjects == null || layoutObjects.Count == 0) {
+    private static string ConvertLevelLayoutToString(List<LayoutObject> layoutObjects)
+    {
+        if (layoutObjects == null || layoutObjects.Count == 0)
+        {
             return "[]";
         }
 
-        List<string> layoutEntries = [];
-        foreach (var layoutObject in layoutObjects) {
+        List<string> layoutEntries = new List<string>();
+        foreach (LayoutObject layoutObject in layoutObjects)
+        {
             string position = layoutObject.position != null && layoutObject.position.Length == 2
-                ? $"[{layoutObject.position[0]}, {layoutObject.position[1]}]"
+                ? SerializeFloatArray(layoutObject.position)
                 : "[]";
             string ingredientField = string.IsNullOrEmpty(layoutObject.ingredient)
                 ? string.Empty
-                : $", \"ingredient\": \"{EscapeJsonString(layoutObject.ingredient)}\"";
+                : ", \"ingredient\": \"" + EscapeJsonString(layoutObject.ingredient) + "\"";
 
-            layoutEntries.Add(
-                $"{{\"type\": \"{EscapeJsonString(layoutObject.type)}\"{ingredientField}, \"position\": {position}}}");
+            layoutEntries.Add("{\"type\": \"" + EscapeJsonString(layoutObject.type) + "\"" + ingredientField + ", \"position\": " + position + "}");
         }
 
         return "[" + string.Join(", ", layoutEntries.ToArray()) + "]";
     }
 
-    private static string ConvertPlayerStartPositionsToString(List<float[]> playerStartPositions) {
-        if (playerStartPositions == null || playerStartPositions.Count == 0) {
+    private static string ConvertPlayerStartPositionsToString(List<float[]> playerStartPositions)
+    {
+        if (playerStartPositions == null || playerStartPositions.Count == 0)
+        {
             return "[]";
         }
 
-        List<string> playerEntries = [];
-        foreach (var position in playerStartPositions) {
-            if (position == null || position.Length != 2) {
+        List<string> playerEntries = new List<string>();
+        foreach (float[] position in playerStartPositions)
+        {
+            if (position == null || position.Length != 2)
+            {
                 playerEntries.Add("[]");
                 continue;
             }
 
-            playerEntries.Add($"[{position[0]}, {position[1]}]");
+            playerEntries.Add(SerializeFloatArray(position));
         }
 
         return "[" + string.Join(", ", playerEntries.ToArray()) + "]";
     }
 
-    private static string EscapeJsonString(string value) {
-        if (string.IsNullOrEmpty(value)) {
+    private static string SerializeFloatArray(float[] values)
+    {
+        if (values == null || values.Length == 0)
+        {
+            return "[]";
+        }
+
+        List<string> entries = new List<string>();
+        for (int i = 0; i < values.Length; i++)
+        {
+            entries.Add(FormatFloat(values[i]));
+        }
+
+        return "[" + string.Join(", ", entries.ToArray()) + "]";
+    }
+
+    private static string SerializeStringArray(string[] values)
+    {
+        if (values == null || values.Length == 0)
+        {
+            return "[]";
+        }
+
+        List<string> entries = new List<string>();
+        for (int i = 0; i < values.Length; i++)
+        {
+            entries.Add("\"" + EscapeJsonString(values[i] ?? string.Empty) + "\"");
+        }
+
+        return "[" + string.Join(", ", entries.ToArray()) + "]";
+    }
+
+    private static string SerializeStringArrayAllowNulls(string[] values)
+    {
+        if (values == null || values.Length == 0)
+        {
+            return "[]";
+        }
+
+        List<string> entries = new List<string>();
+        for (int i = 0; i < values.Length; i++)
+        {
+            entries.Add(values[i] == null ? "null" : "\"" + EscapeJsonString(values[i]) + "\"");
+        }
+
+        return "[" + string.Join(", ", entries.ToArray()) + "]";
+    }
+
+    private static string FormatFloat(float value)
+    {
+        return value.ToString("0.0###", CultureInfo.InvariantCulture);
+    }
+
+    private static string EscapeJsonString(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
             return string.Empty;
         }
 

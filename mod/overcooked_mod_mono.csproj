@@ -8,6 +8,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="assembly_export\**\*.cs" />
+    <EmbeddedResource Remove="assembly_export\**\*" />
+    <None Include="assembly_export\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- BepInEx core -->
     <Reference Include="BepInEx">
       <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Overcooked\BepInEx\core\BepInEx.dll</HintPath>
@@ -23,11 +29,6 @@
     <!-- Unity assemblies -->
     <Reference Include="UnityEngine">
       <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Overcooked\Overcooked_Data\Managed\UnityEngine.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-
-    <Reference Include="UnityEngine.CoreModule">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Overcooked\Overcooked_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
 

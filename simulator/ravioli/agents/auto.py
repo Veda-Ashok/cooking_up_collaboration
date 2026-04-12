@@ -614,7 +614,7 @@ class AutoAgent(Agent):
         return (
             soup["name"] == "soup"
             and soup.get("parent_name") == "plate"
-            and float(soup.get("progress", 0.0)) >= 1.0
+            and self.get_soup_cooking_state(soup) == "cooked"
             and self.soup_ingredient_count(soup) == 3
         )
 
@@ -622,12 +622,25 @@ class AutoAgent(Agent):
         return (
             soup["name"] == "soup"
             and soup.get("parent_name") == "pot"
-            and float(soup.get("progress", 0.0)) >= 1.0
+            and self.get_soup_cooking_state(soup) == "cooked"
             and self.soup_ingredient_count(soup) == 3
         )
 
     def soup_ingredient_count(self, soup: dict) -> int:
         return sum(1 for ingredient in soup.get("ingredients", []) if ingredient is not None)
+
+    def get_soup_cooking_state(self, soup: dict | None) -> str:
+        if soup is None:
+            return "raw"
+        cooking_state = soup.get("cooking_state")
+        if cooking_state is not None:
+            return str(cooking_state).lower()
+        progress = float(soup.get("progress", 0.0))
+        if progress >= 2.0:
+            return "burnt"
+        if progress >= 1.0:
+            return "cooked"
+        return "raw"
 
     def distance(self, position_a: list[float] | tuple[float, float], position_b: list[float] | tuple[float, float]) -> float:
         return math.hypot(position_a[0] - position_b[0], position_a[1] - position_b[1])

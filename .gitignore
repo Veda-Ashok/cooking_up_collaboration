@@ -19,3 +19,4 @@ trained_models/
 .cache/
 
 simulator/ravioli/exports/
+mod/assembly_export/

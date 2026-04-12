@@ -3,6 +3,7 @@ import math
 import pyray as rl
 
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from Box2D import b2CircleShape, b2PolygonShape, b2Vec2, b2World
 from ravioli.agents import AGENT_REGISTRY, HumanAgent, Agent, create_agent, get_agent_id
@@ -11,6 +12,20 @@ from ravioli.agents import AGENT_REGISTRY, HumanAgent, Agent, create_agent, get_
 WORLD_SCALE = 50.0
 TABLETOP_SIZE = b2Vec2(1.25, 1.25)
 PLATE_RETURN_DELAY_SECONDS = 5.0
+
+
+class CookingState(str, Enum):
+    RAW = "raw"
+    COOKED = "cooked"
+    BURNT = "burnt"
+
+
+def cooking_state_from_progress(progress: float) -> CookingState:
+    if progress >= 2.0:
+        return CookingState.BURNT
+    if progress >= 1.0:
+        return CookingState.COOKED
+    return CookingState.RAW
 
 
 def world_to_physics(position: list[float]) -> b2Vec2:
@@ -88,7 +103,7 @@ def get_composite(holder: "ObjectHolder") -> "Composite | None":
     return None
 
 
-def draw_progress_bar(position: rl.Vector2, progress: float) -> None:
+def draw_progress_bar(position: rl.Vector2, progress: float, color: rl.Color = rl.GREEN) -> None:
     progress_width = WORLD_SCALE * 1.25
     progress_height = 5.0
     progress_rect = rl.Rectangle(
@@ -97,7 +112,7 @@ def draw_progress_bar(position: rl.Vector2, progress: float) -> None:
         progress_width * progress,
         progress_height,
     )
-    rl.draw_rectangle_rec(progress_rect, rl.GREEN)
+    rl.draw_rectangle_rec(progress_rect, color)
     rl.draw_rectangle_lines_ex(progress_rect, 1.0, rl.BLACK)
 
 
@@ -226,11 +241,25 @@ class Soup(Composite):
     def __init__(self, level: "Level"):
         super().__init__(level)
         self.body = level.world.CreateStaticBody()
-        self.progress = 0.0
+        self.cooking_progress = 0.0
+        self.cooking_state = CookingState.RAW
         self.ingredients = []
 
     def draw(self) -> None:
-        draw_centered_circle(center=physics_to_screen(self.body.position), radius=WORLD_SCALE * 0.2, color=rl.ORANGE)
+        color = rl.ORANGE
+        if self.cooking_state == CookingState.BURNT:
+            color = rl.BROWN
+        draw_centered_circle(center=physics_to_screen(self.body.position), radius=WORLD_SCALE * 0.2, color=color)
+
+    def set_cooking_progress(self, cooking_progress: float) -> None:
+        self.cooking_progress = max(cooking_progress, 0.0)
+        self.cooking_state = cooking_state_from_progress(self.cooking_progress)
+
+    def is_cooked(self) -> bool:
+        return self.cooking_state == CookingState.COOKED
+
+    def is_ready_to_plate(self) -> bool:
+        return len(self.ingredients) == 3 and self.is_cooked()
 
     def add_ingredient(self, ingredient: Onion) -> bool:
         if len(self.ingredients) < 3:
@@ -309,12 +338,13 @@ class Stove(Interactable):
         self.color = rl.RED
 
     def update(self, delta_time):
+        ObjectHolder.update(self, delta_time)
         self.do_interact = False
-        if isinstance(self.held_object, Pot)and isinstance(self.held_object.held_object, Soup):
-                # Make progress if there is a soup.
-                self.do_interact = True
-                self.held_object.held_object.progress = self.progress
-        super().update(delta_time)
+        if isinstance(self.held_object, Pot) and isinstance(self.held_object.held_object, Soup):
+            self.do_interact = True
+            self.current_time += delta_time
+            self.progress = min(self.current_time / self.total_time, 1.0)
+            self.held_object.held_object.set_cooking_progress(self.progress)
 
     def draw(self) -> None:
         draw_centered_square(
@@ -323,7 +353,13 @@ class Stove(Interactable):
             color=self.color,
         )
         if self.held_object is not None and isinstance(self.held_object, Pot) and isinstance(self.held_object.held_object, Soup):
-            draw_progress_bar(physics_to_screen(self.body.position), self.progress)
+            soup = self.held_object.held_object
+            progress_color = rl.GREEN
+            if soup.cooking_state == CookingState.COOKED:
+                progress_color = rl.GOLD
+            elif soup.cooking_state == CookingState.BURNT:
+                progress_color = rl.RED
+            draw_progress_bar(physics_to_screen(self.body.position), min(self.progress, 1.0), progress_color)
 
     def interact(self) -> None:
         # Stove is always on.
@@ -341,7 +377,7 @@ class Stove(Interactable):
         result = super().put_down(obj)
         if result and isinstance(obj, Pot) and isinstance(obj.held_object, Soup):
             # If we put down a pot with soup on the stove, take its progress.
-            self.progress = obj.held_object.progress
+            self.progress = obj.held_object.cooking_progress
             self.current_time = self.progress * self.total_time
         return result
 
@@ -389,7 +425,12 @@ class Plate(Holdable, IngredientHolder):
     def put_down(self, obj: GameObject) -> bool:
         # When putting down an IngredientHolder, take its contents instead, but only if it has soup with 3 ingredients.
         if self.held_object is None:
-            if isinstance(obj, IngredientHolder) and obj.held_object is not None and isinstance(obj.held_object, Soup) and len(obj.held_object.ingredients) == 3:
+            if (
+                isinstance(obj, IngredientHolder)
+                and obj.held_object is not None
+                and isinstance(obj.held_object, Soup)
+                and obj.held_object.is_ready_to_plate()
+            ):
                 self.held_object = obj.held_object
                 self.held_object.parent = self
                 obj.held_object = None
@@ -456,6 +497,7 @@ class Pot(Holdable, IngredientHolder):
         if self.held_object is None:
             if isinstance(obj, Onion) and obj.progress == 1.0:
                 soup = Soup(self.level)
+                soup.set_cooking_progress(0.0)
                 soup.add_ingredient(obj)
                 self.level.game_objects.append(soup)
                 self.held_object = soup
@@ -477,10 +519,11 @@ class Pot(Holdable, IngredientHolder):
                     if isinstance(self.parent, Stove):
                         self.parent.progress = max(0.0, self.parent.progress - 0.33)
                         self.parent.current_time = self.parent.progress * self.parent.total_time
+                        self.held_object.set_cooking_progress(self.parent.progress)
                 return added
             elif isinstance(obj, IngredientHolder) and obj.held_object is None:
                 # When putting down an IngredientHolder that is empty, transfer our contents instead, but only if the soup has 3 ingredients.
-                if len(self.held_object.ingredients) == 3:
+                if self.held_object.is_ready_to_plate():
                     obj.held_object = self.held_object
                     obj.held_object.parent = obj
                     self.held_object = None
@@ -524,7 +567,7 @@ class DeliveryStation(ObjectHolder):
 
     def put_down(self, obj: Plate) -> bool:
         # Only accept plates, and only if they have a cooked soup on them with 3 ingredients.
-        if isinstance(obj, Plate) and isinstance(obj.held_object, Soup) and len(obj.held_object.ingredients) == 3 and obj.held_object.progress == 1.0:
+        if isinstance(obj, Plate) and isinstance(obj.held_object, Soup) and obj.held_object.is_ready_to_plate():
             delivered_soup = obj.held_object
             obj.held_object = None
             delivered_soup.parent = None
@@ -1227,9 +1270,10 @@ def create_game_state(level: Level) -> dict:
             if parent is not None:
                 object_state["parent_id"] = entity_ids.get(parent)
                 object_state["parent_name"] = entity_ids[parent] if isinstance(parent, Player) else OBJECT_TO_NAME[type(parent)]
-            if isinstance(game_object, (Onion, Soup)):
+            if isinstance(game_object, Onion):
                 object_state["progress"] = game_object.progress
             if isinstance(game_object, Soup):
+                object_state["cooking_state"] = game_object.cooking_state.value
                 object_state["ingredients"] = [
                     OBJECT_TO_NAME[type(ingredient)] for ingredient in game_object.ingredients
                 ]

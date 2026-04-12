@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using UnityEngine;
 
 [Serializable]
-public class Player {
-    public int[] position;
-    public int[] orientation;
-    public string held_object;
+public class PlayerStateDto {
+    public string id;
+    public string name;
+    public float[] position;
+    public string held_object_id;
+    public string held_object_name;
 }
 
 [Serializable]
@@ -15,9 +17,20 @@ public class Order {
 }
 
 [Serializable]
-public class Element {
+public class ObjectStateDto {
+    public string id;
     public string name;
-    public int[] position;
+    public float[] position;
+    public string parent_id;
+    public string parent_name;
+    public string held_object_id;
+    public string held_object_name;
+    public float? progress;
+    public string cooking_state;
+    public string[] ingredients;
+    public string[] plate_ids;
+    public int? plate_count;
+    public string ingredient;
 }
 
 [Serializable]
@@ -28,22 +41,7 @@ public class LayoutObject {
 }
 
 [Serializable]
-public class GameState {
-    public List<Player> players;
-    public List<Element> objects;
-    public List<Order> all_orders;
-    public int timestep;
-}
-
-[Serializable]
-public class GameRecord {
-    public string state;
-    public float time_left;
-    public int score;
-    public float time_elapsed;
-    public int cur_gameloop;
-    public string layout;
-    public string layout_name;
-    public bool player_0_is_human;
-    public bool player_1_is_human;
+public class ExtractedStateDto {
+    public List<PlayerStateDto> players;
+    public List<ObjectStateDto> objects;
 }
