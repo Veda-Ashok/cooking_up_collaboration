@@ -7,6 +7,7 @@ public class PlayerStateDto {
     public string id;
     public string name;
     public float[] position;
+    public float[] facing;
     public string held_object_id;
     public string held_object_name;
 }

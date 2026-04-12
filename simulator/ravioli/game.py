@@ -6,12 +6,13 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from Box2D import b2CircleShape, b2PolygonShape, b2Vec2, b2World
-from ravioli.agents import AGENT_REGISTRY, HumanAgent, Agent, create_agent, get_agent_id
+from ravioli.agents import HumanAgent, Agent, create_agent
 
 
 WORLD_SCALE = 50.0
 TABLETOP_SIZE = b2Vec2(1.25, 1.25)
-PLATE_RETURN_DELAY_SECONDS = 5.0
+PLAYER_INTERACTION_DISTANCE = 1.3
+PLAYER_INTERACTION_ALIGNMENT_DOT = 0.2
 
 
 class CookingState(str, Enum):
@@ -669,7 +670,7 @@ class DryingRack(ObjectHolder):
 class Sink(Interactable):
     def __init__(self, level: "Level", position: b2Vec2):
         super().__init__(level)
-        self.total_time = 8.0
+        self.total_time = 3.3
         self.body = level.world.CreateStaticBody(position=position)
         self.body.CreateFixture(
             shape=b2PolygonShape(box=(TABLETOP_SIZE.x / 2, TABLETOP_SIZE.y / 2)),
@@ -812,6 +813,7 @@ class Player:
             restitution=0.0,
         )
         self.last_input_state = {}
+        self.facing = [0.0, 1.0]
 
     def get_move_direction(self, input_state: dict) -> tuple[float, float]:
         if self.agent is None:
@@ -826,38 +828,72 @@ class Player:
 
         return horizontal / magnitude, vertical / magnitude
 
+    def get_facing_direction_in_physics_space(self) -> tuple[float, float]:
+        facing_x = float(self.facing[0])
+        facing_y = -float(self.facing[1])
+        magnitude = math.hypot(facing_x, facing_y)
+        if magnitude <= 0.0:
+            return 0.0, 0.0
+        return facing_x / magnitude, facing_y / magnitude
+
+    def get_best_action_target(self, targets: list[ObjectHolder]) -> ObjectHolder | None:
+        facing_x, facing_y = self.get_facing_direction_in_physics_space()
+        candidates: list[tuple[float, float, ObjectHolder]] = []
+
+        for target in targets:
+            delta = target.body.position - self.body.position
+            distance = delta.length
+            if distance > PLAYER_INTERACTION_DISTANCE:
+                continue
+
+            if distance <= 0.0001:
+                alignment = 1.0
+            else:
+                alignment = ((delta.x / distance) * facing_x) + ((delta.y / distance) * facing_y)
+
+            if alignment < PLAYER_INTERACTION_ALIGNMENT_DOT:
+                continue
+
+            candidates.append((alignment, -distance, target))
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
+
     def pick_up_or_put_down(self, input_state: dict) -> None:
         # Check for nearby object_holders to pick up from or put down onto.
-        # Priority is given to putting down over picking up, and to the first object_holders found in the list.
+        # Priority is given to putting down over picking up, and to the best aligned object holder in front of the player.
         if input_state["carry"]:
-            for object_holder in self.level.object_holders:
-                distance = (object_holder.body.position - self.body.position).length
-                if distance <= self.radius * 3:
-                    if self.held_object is None:
-                        # When picking up we find the root.
-                        root = get_root(object_holder)
-                        picked_up_object = root.pick_up(self)
-                        if picked_up_object is not None:
-                            self.held_object = picked_up_object
-                            return
-                    else:
-                        # When putting down we find the leaf.
-                        leaf = get_leaf(object_holder)
-                        if leaf.put_down(self.held_object):
-                            self.held_object = None
-                            return
+            object_holder = self.get_best_action_target(self.level.object_holders)
+            if object_holder is None:
+                return
+            if self.held_object is None:
+                # When picking up we find the root.
+                root = get_root(object_holder)
+                picked_up_object = root.pick_up(self)
+                if picked_up_object is not None:
+                    self.held_object = picked_up_object
+                    return
+            else:
+                # When putting down we find the leaf.
+                leaf = get_leaf(object_holder)
+                if leaf.put_down(self.held_object):
+                    self.held_object = None
+                    return
 
     def do_interact(self, input_state: dict) -> None:
         if input_state["interact"]:
-            for interactable in self.level.interactables:
-                distance = (interactable.body.position - self.body.position).length
-                if distance <= self.radius * 3:
-                    interactable.interact()
+            interactable = self.get_best_action_target(self.level.interactables)
+            if interactable is not None:
+                interactable.interact()
 
     def update(self, delta_time: float) -> None:
         input_state = self.agent.update(delta_time, create_game_state(self.level))
         self.last_input_state = input_state
         move_x, move_y = self.get_move_direction(input_state)
+        if move_x != 0.0 or move_y != 0.0:
+            self.facing = [move_x, -move_y]
         self.body.linearVelocity = (move_x * self.move_speed * delta_time, move_y * self.move_speed * delta_time)
         self.pick_up_or_put_down(input_state)
         self.do_interact(input_state)
@@ -1146,8 +1182,9 @@ class Level:
         if body is not None:
             self.world.DestroyBody(body)
 
-    def schedule_dirty_plate_return(self, delay: float = PLATE_RETURN_DELAY_SECONDS) -> None:
-        self.pending_dirty_plate_returns.append(delay)
+    def schedule_dirty_plate_return(self) -> None:
+        plate_delay_seconds = 6.3
+        self.pending_dirty_plate_returns.append(plate_delay_seconds)
 
     def update_dirty_plate_returns(self, delta_time: float) -> None:
         if not self.pending_dirty_plate_returns:
@@ -1251,6 +1288,7 @@ def create_game_state(level: Level) -> dict:
                 "id": entity_ids[player],
                 "name": entity_ids[player],
                 "position": physics_to_world(player.body.position),
+                "facing": [round(player.facing[0], 3), round(player.facing[1], 3)],
             }
             if player.held_object is not None:
                 player_state["held_object_id"] = entity_ids.get(player.held_object)

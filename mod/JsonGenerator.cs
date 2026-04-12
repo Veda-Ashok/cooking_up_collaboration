@@ -5,7 +5,7 @@ using System.Text;
 
 public static class JsonGenerator
 {
-    public static string GenerateGameJson(List<PlayerStateDto> players, List<ObjectStateDto> objects)
+    public static string GenerateGameJson(List<PlayerStateDto> players, List<ObjectStateDto> objects, bool writeToDisk = true)
     {
         ExtractedStateDto state = new()
         {
@@ -14,16 +14,23 @@ public static class JsonGenerator
         };
 
         string json = ConvertStateToString(state);
-        File.WriteAllText("state.json", json);
+        if (writeToDisk)
+        {
+            File.WriteAllText("state.json", json);
+        }
         return json;
     }
 
-    public static void GenerateLevelJson(List<LayoutObject> layoutObjects, List<float[]> playerStartPositions)
+    public static string GenerateLevelJson(List<LayoutObject> layoutObjects, List<float[]> playerStartPositions, bool writeToDisk = true)
     {
         string layoutString = ConvertLevelLayoutToString(layoutObjects);
         string playerStartsString = ConvertPlayerStartPositionsToString(playerStartPositions);
         string json = "{\"layout\": " + layoutString + ", \"player_starts\": " + playerStartsString + "}";
-        File.WriteAllText("level.json", json);
+        if (writeToDisk)
+        {
+            File.WriteAllText("level.json", json);
+        }
+        return json;
     }
 
     private static string ConvertStateToString(ExtractedStateDto state)
@@ -36,6 +43,7 @@ public static class JsonGenerator
             builder.Append("\"id\": \"").Append(EscapeJsonString(player.id)).Append("\"");
             builder.Append(", \"name\": \"").Append(EscapeJsonString(player.name)).Append("\"");
             builder.Append(", \"position\": ").Append(SerializeFloatArray(player.position));
+            builder.Append(", \"facing\": ").Append(SerializeFloatArray(player.facing));
 
             if (!string.IsNullOrEmpty(player.held_object_id))
             {

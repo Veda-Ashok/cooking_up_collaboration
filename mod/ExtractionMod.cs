@@ -1,11 +1,15 @@
 using BepInEx;
+using BepInEx.Configuration;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Reflection;
+using System.Text;
+using System.Threading;
 using UnityEngine;
 // using YourGameNamespace; // add if dnSpy shows a namespace for PlayerControls
 
@@ -36,6 +40,7 @@ namespace ExtractionMod
         };
         private HashSet<int> _unmappedRecipeIds = [];
         private float _scanTimer;
+        private float _publishTimer;
         private float _logTimer;
         private HashSet<string> _reflectionWarnings = [];
 
@@ -48,6 +53,19 @@ namespace ExtractionMod
         private List<IOrderController> _orderControllers;
         private int _gameloop;
         private string _debugLogPath;
+        private string _lastLevelJson;
+        private string _queuedStateJson;
+        private string _queuedLevelJson;
+        private string _lastStreamErrorMessage;
+        private float _lastStreamErrorLogTime;
+        private bool _streamWorkerActive;
+        private readonly object _streamLock = new object();
+        private ConfigEntry<bool> _writeJsonFilesConfig;
+        private ConfigEntry<float> _publishIntervalSecondsConfig;
+        private ConfigEntry<float> _statusLogIntervalSecondsConfig;
+        private ConfigEntry<bool> _enableHttpStreamConfig;
+        private ConfigEntry<string> _httpStreamBaseUrlConfig;
+        private ConfigEntry<int> _httpStreamTimeoutMillisecondsConfig;
 
         private sealed class PlayerCandidate
         {
@@ -69,6 +87,13 @@ namespace ExtractionMod
         private void Awake()
         {
             _debugLogPath = Path.Combine(Paths.GameRootPath, "extraction_mod_debug.log");
+            _writeJsonFilesConfig = Config.Bind("Output", "WriteJsonFiles", true, "Write state.json and level.json to disk.");
+            _publishIntervalSecondsConfig = Config.Bind("Output", "PublishIntervalSeconds", 0.1f, "Seconds between state publishes.");
+            _statusLogIntervalSecondsConfig = Config.Bind("Diagnostics", "StatusLogIntervalSeconds", 5.0f, "Seconds between diagnostic status logs.");
+            _enableHttpStreamConfig = Config.Bind("Streaming", "EnableHttpStream", true, "POST state and level JSON to the configured HTTP endpoint.");
+            _httpStreamBaseUrlConfig = Config.Bind("Streaming", "HttpStreamBaseUrl", "http://127.0.0.1:8765", "Base URL for the Python receiver.");
+            _httpStreamTimeoutMillisecondsConfig = Config.Bind("Streaming", "HttpTimeoutMilliseconds", 250, "HTTP timeout for localhost streaming.");
+            ServicePointManager.Expect100Continue = false;
             SafeLog("Awake");
         }
 
@@ -95,7 +120,6 @@ namespace ExtractionMod
         {
             try
             {
-                // Periodically re-scan to update positions
                 _scanTimer += Time.deltaTime;
                 if (_scanTimer >= 5f)
                 {
@@ -103,29 +127,53 @@ namespace ExtractionMod
                     RefreshAllObjects();
                 }
 
+                _publishTimer += Time.deltaTime;
                 _logTimer += Time.deltaTime;
-                if (_logTimer >= 10f) // log 1x/sec, adjust as you like
+                float publishIntervalSeconds = Mathf.Max(_publishIntervalSecondsConfig.Value, 0.01f);
+                if (_publishTimer < publishIntervalSeconds)
+                {
+                    return;
+                }
+
+                _publishTimer = 0f;
+
+                //TODO: Determine the number of columns and rows based on the game board
+                //TODO: Automate getting these bounds from the game board
+                float max_x = 24f;
+                float min_x = 9f;
+                float max_z = 11f;
+                float min_z = 1f;
+                int n = 9; // rows
+                int m = 12; // columns
+                ComputeLayout(n, m, max_x, min_x, max_z, min_z);
+                ComputeState(n, m, max_x, min_x, max_z, min_z);
+                _gameloop++;
+
+                string stateJson = JsonGenerator.GenerateGameJson(_players, _objects, _writeJsonFilesConfig.Value);
+                string levelJson = JsonGenerator.GenerateLevelJson(_layoutObjects, _playerStartPositions, false);
+                bool levelChanged = !string.Equals(_lastLevelJson, levelJson, StringComparison.Ordinal);
+                if (levelChanged)
+                {
+                    _lastLevelJson = levelJson;
+                    if (_writeJsonFilesConfig.Value)
+                    {
+                        File.WriteAllText("level.json", levelJson);
+                    }
+                }
+
+                if (_enableHttpStreamConfig.Value)
+                {
+                    EnqueueStreamPayloads(stateJson, levelChanged ? levelJson : null);
+                }
+
+                float statusLogIntervalSeconds = Mathf.Max(_statusLogIntervalSecondsConfig.Value, 0.1f);
+                if (_logTimer >= statusLogIntervalSeconds)
                 {
                     _logTimer = 0f;
-
-                    //TODO: Determine the number of columns and rows based on the game board
-                    //TODO: Automate getting these bounds from the game board
-                    float max_x = 24f;
-                    float min_x = 9f;
-                    float max_z = 11f;
-                    float min_z = 1f;
-                    int n = 9; // rows
-                    int m = 12; // columns
-                    ComputeLayout(n, m, max_x, min_x, max_z, min_z);
-                    ComputeState(n, m, max_x, min_x, max_z, min_z);
-                    _gameloop++;
-
                     LogOrderDebugInfo();
-                    Logger.LogInfo($"ComputeState finished. Players: {_players.Count}, Objects: {_objects.Count}");
-                    string temp = JsonGenerator.GenerateGameJson(_players, _objects);
-                    JsonGenerator.GenerateLevelJson(_layoutObjects, _playerStartPositions);
-                    SafeLog($"ComputeState ok loop={_gameloop} players={_players.Count} objects={_objects.Count}");
-                    Logger.LogInfo($"state: {temp}");
+                    string streamTarget = _enableHttpStreamConfig.Value ? _httpStreamBaseUrlConfig.Value : "disabled";
+                    Logger.LogInfo($"ComputeState ok loop={_gameloop} players={_players.Count} objects={_objects.Count} stream={streamTarget}");
+                    SafeLog($"ComputeState ok loop={_gameloop} players={_players.Count} objects={_objects.Count} stream={streamTarget}");
                 }
             }
             catch (Exception ex)
@@ -133,6 +181,122 @@ namespace ExtractionMod
                 SafeLog("Update exception: " + ex);
                 throw;
             }
+        }
+
+        private void EnqueueStreamPayloads(string stateJson, string levelJson)
+        {
+            if (string.IsNullOrEmpty(stateJson) && string.IsNullOrEmpty(levelJson))
+            {
+                return;
+            }
+
+            lock (_streamLock)
+            {
+                if (!string.IsNullOrEmpty(stateJson))
+                {
+                    _queuedStateJson = stateJson;
+                }
+
+                if (!string.IsNullOrEmpty(levelJson))
+                {
+                    _queuedLevelJson = levelJson;
+                }
+
+                if (_streamWorkerActive)
+                {
+                    return;
+                }
+
+                _streamWorkerActive = true;
+            }
+
+            ThreadPool.QueueUserWorkItem(StreamPayloadWorker);
+        }
+
+        private void StreamPayloadWorker(object state)
+        {
+            while (true)
+            {
+                string stateJson;
+                string levelJson;
+                lock (_streamLock)
+                {
+                    stateJson = _queuedStateJson;
+                    levelJson = _queuedLevelJson;
+                    _queuedStateJson = null;
+                    _queuedLevelJson = null;
+
+                    if (string.IsNullOrEmpty(stateJson) && string.IsNullOrEmpty(levelJson))
+                    {
+                        _streamWorkerActive = false;
+                        return;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(levelJson))
+                {
+                    TryPostJson("/level", levelJson);
+                }
+
+                if (!string.IsNullOrEmpty(stateJson))
+                {
+                    TryPostJson("/state", stateJson);
+                }
+            }
+        }
+
+        private void TryPostJson(string relativePath, string json)
+        {
+            if (string.IsNullOrEmpty(relativePath) || string.IsNullOrEmpty(json))
+            {
+                return;
+            }
+
+            try
+            {
+                string baseUrl = (_httpStreamBaseUrlConfig.Value ?? string.Empty).TrimEnd('/');
+                if (string.IsNullOrEmpty(baseUrl))
+                {
+                    return;
+                }
+
+                string endpoint = baseUrl + relativePath;
+                byte[] payload = Encoding.UTF8.GetBytes(json);
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(endpoint);
+                request.Method = "POST";
+                request.ContentType = "application/json";
+                request.Timeout = Math.Max(_httpStreamTimeoutMillisecondsConfig.Value, 50);
+                request.ReadWriteTimeout = request.Timeout;
+                request.ContentLength = payload.Length;
+
+                using (Stream requestStream = request.GetRequestStream())
+                {
+                    requestStream.Write(payload, 0, payload.Length);
+                }
+
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                {
+                }
+            }
+            catch (Exception ex)
+            {
+                ReportStreamError($"POST {relativePath} failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        private void ReportStreamError(string message)
+        {
+            float currentTime = Time.realtimeSinceStartup;
+            if (string.Equals(message, _lastStreamErrorMessage, StringComparison.Ordinal) &&
+                currentTime - _lastStreamErrorLogTime < 5.0f)
+            {
+                return;
+            }
+
+            _lastStreamErrorMessage = message;
+            _lastStreamErrorLogTime = currentTime;
+            Logger.LogInfo("ExtractionMod stream error: " + message);
+            SafeLog("Stream error: " + message);
         }
 
         private void ComputeState(int n, int m, float max_x, float min_x, float max_z, float min_z)
@@ -185,7 +349,8 @@ namespace ExtractionMod
                     PlayerIndex = TryGetPlayerIndex(player) ?? i,
                     State = new PlayerStateDto
                     {
-                        position = ToWorldPosition(player.transform.position)
+                        position = ToWorldPosition(player.transform.position),
+                        facing = ToWorldDirection(player.transform.forward)
                     }
                 });
             }
@@ -219,6 +384,7 @@ namespace ExtractionMod
             AddPlateReturnStationCandidates(objectCandidates, seen);
             AddRubbishBinCandidates(objectCandidates, seen);
             AddIngredientCandidates(objectCandidates, seen);
+            AddTrackedDirtyPlateStackCandidates(objectCandidates, seen);
             AddDirtyPlateStackCandidates(objectCandidates, ref syntheticKey);
             AddSoupCandidates(objectCandidates, ref syntheticKey);
             RemoveAliasedStateObjects(objectCandidates);
@@ -375,6 +541,15 @@ namespace ExtractionMod
                     continue;
                 }
 
+                if (
+                    parents[i].State.name == "plate_return_station" &&
+                    objectCandidates.Any(candidate =>
+                        candidate.State.name == "stacked_dirty_plates" &&
+                        Distance(candidate.State.position, parents[i].State.position) <= 0.6f))
+                {
+                    continue;
+                }
+
                 objectCandidates.Add(new ObjectCandidate
                 {
                     SourceKey = syntheticKey--,
@@ -386,6 +561,43 @@ namespace ExtractionMod
                         plate_count = plateCount.Value
                     }
                 });
+            }
+        }
+
+        private void AddTrackedDirtyPlateStackCandidates(List<ObjectCandidate> objectCandidates, HashSet<string> seen)
+        {
+            if (!_trackedObjects.TryGetValue(typeof(DirtyPlateStack), out MonoBehaviour[] trackedObjects))
+            {
+                return;
+            }
+
+            for (int i = 0; i < trackedObjects.Length; i++)
+            {
+                DirtyPlateStack dirtyPlateStack = trackedObjects[i] as DirtyPlateStack;
+                if (dirtyPlateStack == null)
+                {
+                    continue;
+                }
+
+                int? plateCount = TryGetDirtyPlateCount(dirtyPlateStack);
+                if (!plateCount.HasValue || plateCount.Value <= 0)
+                {
+                    continue;
+                }
+
+                ObjectCandidate candidate = AddObjectCandidate(
+                    objectCandidates,
+                    seen,
+                    dirtyPlateStack,
+                    "stacked_dirty_plates",
+                    false,
+                    false);
+                if (candidate == null)
+                {
+                    continue;
+                }
+
+                candidate.State.plate_count = plateCount.Value;
             }
         }
 
@@ -1018,6 +1230,18 @@ namespace ExtractionMod
         private float[] ToWorldPosition(Vector3 position)
         {
             return [RoundCoordinate(position.x), RoundCoordinate(position.z)];
+        }
+
+        private float[] ToWorldDirection(Vector3 direction)
+        {
+            Vector2 directionXZ = new Vector2(direction.x, direction.z);
+            if (directionXZ.sqrMagnitude <= 0.0001f)
+            {
+                return [0f, 0f];
+            }
+
+            directionXZ.Normalize();
+            return [RoundCoordinate(directionXZ.x), RoundCoordinate(directionXZ.y)];
         }
 
         private float RoundCoordinate(float value)
@@ -2131,6 +2355,7 @@ namespace ExtractionMod
         {
             RefreshObjects<IngredientContainer>(); // Pots and Plates
             RefreshObjects<PlateReturnStation>(); // Dirty plates station and sink clean plates station
+            RefreshObjects<DirtyPlateStack>(); // Carried and returned dirty plate stacks
             RefreshObjects<PlayerControls>(); // Players
             RefreshObjects<PickupItemSpawner>(); // Dispenser crates
             RefreshObjects<AttachStation>(); // TableTops DryingPart (clean plates), PlateStation, and chopping boards.
@@ -2144,6 +2369,7 @@ namespace ExtractionMod
                 "RefreshAllObjects " +
                 $"IngredientContainer={GetTrackedCount(typeof(IngredientContainer))} " +
                 $"PlateReturnStation={GetTrackedCount(typeof(PlateReturnStation))} " +
+                $"DirtyPlateStack={GetTrackedCount(typeof(DirtyPlateStack))} " +
                 $"PlayerControls={GetTrackedCount(typeof(PlayerControls))} " +
                 $"PickupItemSpawner={GetTrackedCount(typeof(PickupItemSpawner))} " +
                 $"AttachStation={GetTrackedCount(typeof(AttachStation))} " +

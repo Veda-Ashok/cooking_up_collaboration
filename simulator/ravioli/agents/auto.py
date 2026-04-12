@@ -26,7 +26,8 @@ class Goal(str, Enum):
 class AutoAgent(Agent):
     GRID_STEP = 0.6
     APPROACH_DISTANCE = 1.0
-    ACTION_DISTANCE = 1.1
+    ACTION_DISTANCE = 1.3
+    FACING_ALIGNMENT_DOT = 0.8
     WAYPOINT_TOLERANCE = 0.15
     BLOCKER_CLEARANCE = 0.95
     HOLDER_NAMES = {
@@ -294,10 +295,13 @@ class AutoAgent(Agent):
             return self.zero_input()
 
         player_position = player["position"]
+        path = self.find_path(world, player_position, target_position)
         if self.distance(player_position, target_position) <= self.ACTION_DISTANCE:
+            facing_input = self.face_target_position(world, target_position)
+            if facing_input is not None:
+                return facing_input
             return self.input_state(carry=carry, interact=interact)
 
-        path = self.find_path(world, player_position, target_position)
         next_position = path[1] if len(path) > 1 else path[0] if path else target_position
         move_x = next_position[0] - player_position[0]
         move_y = player_position[1] - next_position[1]
@@ -307,6 +311,33 @@ class AutoAgent(Agent):
             move_y = player_position[1] - target_position[1]
 
         return self.input_state(move_x=move_x, move_y=move_y)
+
+    def face_target_position(self, world: dict, target_position: list[float]) -> dict | None:
+        player = world["self_player"]
+        if player is None:
+            return None
+
+        player_position = player["position"]
+        desired_facing = self.normalize_world_vector(
+            (
+                target_position[0] - player_position[0],
+                target_position[1] - player_position[1],
+            )
+        )
+        if desired_facing is None:
+            return None
+
+        player_facing = self.get_player_facing(world)
+        if player_facing is None:
+            return None
+
+        if self.dot(player_facing, desired_facing) >= self.FACING_ALIGNMENT_DOT:
+            return None
+
+        return self.input_state(
+            move_x=desired_facing[0],
+            move_y=-desired_facing[1],
+        )
 
     def find_path(self, world: dict, start_position: list[float], target_position: list[float]) -> list[list[float]]:
         goal_positions = self.get_approach_positions(world, target_position)
@@ -439,9 +470,22 @@ class AutoAgent(Agent):
         if player is None:
             return None
         held_object_id = player.get("held_object_id")
-        if held_object_id is None:
+        if held_object_id is not None:
+            held_object = world["objects_by_id"].get(held_object_id)
+            if held_object is not None:
+                return held_object
+
+        player_id = player.get("id")
+        if player_id is None:
             return None
-        return world["objects_by_id"].get(held_object_id)
+
+        return next(
+            (
+                obj for obj in world["objects"]
+                if obj.get("parent_id") == player_id
+            ),
+            None,
+        )
 
     def get_parent_entity(self, world: dict, entity: dict | None) -> dict | None:
         if entity is None:
@@ -644,6 +688,31 @@ class AutoAgent(Agent):
 
     def distance(self, position_a: list[float] | tuple[float, float], position_b: list[float] | tuple[float, float]) -> float:
         return math.hypot(position_a[0] - position_b[0], position_a[1] - position_b[1])
+
+    def normalize_world_vector(
+        self,
+        vector: list[float] | tuple[float, float],
+    ) -> tuple[float, float] | None:
+        magnitude = math.hypot(vector[0], vector[1])
+        if magnitude <= 0.0001:
+            return None
+        return vector[0] / magnitude, vector[1] / magnitude
+
+    def get_player_facing(self, world: dict) -> tuple[float, float] | None:
+        player = world["self_player"]
+        if player is None:
+            return None
+        facing = player.get("facing")
+        if not isinstance(facing, list) or len(facing) != 2:
+            return None
+        return self.normalize_world_vector((float(facing[0]), float(facing[1])))
+
+    def dot(
+        self,
+        vector_a: list[float] | tuple[float, float],
+        vector_b: list[float] | tuple[float, float],
+    ) -> float:
+        return (vector_a[0] * vector_b[0]) + (vector_a[1] * vector_b[1])
 
     def input_state(
         self,
