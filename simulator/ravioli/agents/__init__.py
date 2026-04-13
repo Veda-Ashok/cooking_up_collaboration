@@ -2,6 +2,7 @@ from .base import Agent
 from .human import HumanAgent
 from .random import RandomAgent
 from .auto import AutoAgent, AutoOnionAgent, AutoSoupAgent
+from .imitation import ImitationAgent
 
 
 AGENT_TYPES = (
@@ -10,6 +11,7 @@ AGENT_TYPES = (
     {"id": "auto", "label": "Auto", "class": AutoAgent},
     {"id": "auto_onion", "label": "Auto Onion", "class": AutoOnionAgent},
     {"id": "auto_soup", "label": "Auto Soup", "class": AutoSoupAgent},
+    {"id": "imitation", "label": "Imitation", "class": ImitationAgent},
 )
 
 AGENT_REGISTRY = {agent_type["id"]: agent_type for agent_type in AGENT_TYPES}
@@ -34,4 +36,10 @@ def create_agent(agent_info: str | dict[str, object], player_num: int) -> Agent:
     agent_class = AGENT_REGISTRY[agent_id]["class"]
     if agent_id == "human" and isinstance(agent_info, dict):
         return agent_class(player_num, input_type=agent_info.get("input_type"))
+    if agent_id == "imitation" and isinstance(agent_info, dict):
+        return agent_class(
+            player_num,
+            checkpoint_path=agent_info.get("checkpoint_path"),
+            device=agent_info.get("device"),
+        )
     return agent_class(player_num)
