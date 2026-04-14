@@ -3,7 +3,7 @@
 A high-fidelity Overcooked-style simulator with three main entrypoints:
 
 - `simulator.py`: run the local simulator, either interactively or headless.
-- `ravioli/trainer.py`: train an imitation-learning policy from exported trajectory JSONL files.
+- `trainer.py`: train an imitation-learning policy from exported trajectory JSONL files.
 - `live_bridge.py`: receive live Overcooked state over HTTP and optionally drive agents from that stream.
 
 ## Setup
@@ -14,7 +14,7 @@ Commands below assume your working directory is `simulator/`.
 python -m pip install -r requirements.txt
 ```
 
-Download training data to `simulator/exports` from [Google drive](https://drive.google.com/file/d/1Oj_uUPIg2dHeH4TyiZtCeDAaOnjqyq99/view?usp=drive_link).
+Download training data to `ravioli/exports` from [Google drive](https://drive.google.com/file/d/1Oj_uUPIg2dHeH4TyiZtCeDAaOnjqyq99/view?usp=drive_link).
 
 ## `simulator.py`
 
@@ -51,9 +51,9 @@ Runs a fully automated headless simulation with no window. This is useful for ge
 
 Use `--no-export-trajectories` to skip export.
 
-## `ravioli/trainer.py`
+## `trainer.py`
 
-`ravioli/trainer.py` trains a behavior-cloning policy from exported trajectories. By default it reads JSONL files from `ravioli/exports/`, trains either an MLP or LSTM policy, and writes artifacts under `ravioli/training_runs/`.
+`trainer.py` trains a behavior-cloning policy from exported trajectories. It is now a top-level simulator tool alongside `simulator.py` and `live_bridge.py`. By default it reads JSONL files from `ravioli/exports/`, trains either an MLP or LSTM policy, and writes artifacts under `ravioli/training_runs/`.
 
 Typical outputs:
 
@@ -66,31 +66,31 @@ Typical outputs:
 Examples:
 
 ```powershell
-python ravioli/trainer.py --model mlp
+python trainer.py --model mlp
 ```
 
 Trains an MLP on all JSONL files in `ravioli/exports/` using the default settings.
 
 ```powershell
-python ravioli/trainer.py --model lstm --seq-len 32 --hidden-dim 256 --num-layers 2
+python trainer.py --model lstm --seq-len 32 --hidden-dim 256 --num-layers 2
 ```
 
 Trains an LSTM with a longer temporal window and custom hidden size.
 
 ```powershell
-python ravioli/trainer.py --model lstm --player-mode single --player-slot 1 --run-name player1_lstm
+python trainer.py --model lstm --player-mode single --player-slot 1 --run-name player1_lstm
 ```
 
 Trains only on player 1 behavior and saves the run under a custom name. This is useful when the two player slots have different roles.
 
 ```powershell
-python ravioli/trainer.py --data-path ravioli/exports/2026-04-12_15-11-12.jsonl --model mlp --epochs 50
+python trainer.py --data-path ravioli/exports/2026-04-12_15-11-12.jsonl --model mlp --epochs 50
 ```
 
 Trains from a single export file instead of the whole directory.
 
 ```powershell
-python ravioli/trainer.py --model lstm --player-slot 2
+python trainer.py --model lstm --player-slot 2
 ```
 
 Filters the dataset to data from player 2.
@@ -135,7 +135,7 @@ python simulator.py --player-1 auto --player-2 auto --headless
 Train a policy:
 
 ```powershell
-python ravioli/trainer.py --model lstm
+python trainer.py --model lstm
 ```
 
 Run the trained policy in the local simulator:

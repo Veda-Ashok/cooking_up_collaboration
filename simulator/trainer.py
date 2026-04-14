@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,31 +13,21 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from ravioli.imitation_common import (  # type: ignore[import-not-found]
-        ACTION_TO_ID,
-        ID_TO_ACTION,
-        FeatureSchema,
-        build_feature_schema,
-        build_policy_model,
-        featurize_state_for_player,
-        input_state_to_action_id,
-    )
-else:
-    from .imitation_common import (
-        ACTION_TO_ID,
-        ID_TO_ACTION,
-        FeatureSchema,
-        build_feature_schema,
-        build_policy_model,
-        featurize_state_for_player,
-        input_state_to_action_id,
-    )
+from ravioli.imitation_common import (
+    ACTION_TO_ID,
+    ID_TO_ACTION,
+    FeatureSchema,
+    build_feature_schema,
+    build_policy_model,
+    featurize_state_for_player,
+    input_state_to_action_id,
+)
 
 
-DEFAULT_DATA_PATH = Path(__file__).resolve().parent / "exports"
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "training_runs"
+SIMULATOR_DIR = Path(__file__).resolve().parent
+RAVIOLI_DIR = SIMULATOR_DIR / "ravioli"
+DEFAULT_DATA_PATH = RAVIOLI_DIR / "exports"
+DEFAULT_OUTPUT_DIR = RAVIOLI_DIR / "training_runs"
 DEFAULT_DEPLOY_DIR = DEFAULT_OUTPUT_DIR / "imitation"
 
 
