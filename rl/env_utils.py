@@ -43,6 +43,8 @@ class OvercookedRLWrapper(gym.Env):
         always "featurized" in practice, since BC models expect the 96-D vector.
     """
 
+    REWARD_TRANSFORMS = ("clip", "symlog", "none")
+
     def __init__(
         self,
         layout_name: str,
@@ -53,6 +55,7 @@ class OvercookedRLWrapper(gym.Env):
         seq_len: int = 20,
         reward_shaping_coef: float = 0.0,
         reward_clip: float = 5.0,
+        reward_transform: str = "clip",
         obs_mode: str = "featurized",
         partner_obs_mode: str = "featurized",
         player_idx: int | str = 0,
@@ -63,8 +66,15 @@ class OvercookedRLWrapper(gym.Env):
             0          -- always player 0 (default, original behavior)
             1          -- always player 1
             "alternate" -- randomly 0 or 1 each episode
+
+        reward_transform: how to scale the per-step reward.
+            "clip"   -- hard clip to [-reward_clip, +reward_clip] (default)
+            "symlog" -- sign(x) * log(1 + |x|), smooth compression
+            "none"   -- no transformation
         """
         super().__init__()
+        if reward_transform not in self.REWARD_TRANSFORMS:
+            raise ValueError(f"reward_transform must be one of {self.REWARD_TRANSFORMS}")
         _configure_planner_cache(planner_cache_dir)
 
         self.mdp = OvercookedGridworld.from_layout_name(layout_name)
@@ -91,6 +101,7 @@ class OvercookedRLWrapper(gym.Env):
         self.seq_len = seq_len
         self.reward_shaping_coef = float(reward_shaping_coef)
         self.reward_clip = float(reward_clip)
+        self.reward_transform = reward_transform
         self.debug = bool(debug)
 
         self.latest_partner_obs: np.ndarray | None = None
@@ -188,6 +199,18 @@ class OvercookedRLWrapper(gym.Env):
         team_reward = float(sparse_reward + self.reward_shaping_coef * shaped_reward)
         return team_reward, shaped_reward
 
+    @staticmethod
+    def _symlog(x: float) -> float:
+        """sign(x) * log(1 + |x|) -- smoothly compresses large magnitudes."""
+        return float(np.sign(x) * np.log1p(abs(x)))
+
+    def _transform_reward(self, reward: float) -> float:
+        if self.reward_transform == "symlog":
+            return self._symlog(reward)
+        if self.reward_transform == "clip" and self.reward_clip > 0:
+            return float(np.clip(reward, -self.reward_clip, self.reward_clip))
+        return reward
+
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         super().reset(seed=seed)
 
@@ -282,8 +305,7 @@ class OvercookedRLWrapper(gym.Env):
             info = {"raw_info": info}
         team_reward, shaped_reward = self._compute_team_reward(float(sparse_reward), info, next_state)
 
-        if self.reward_clip > 0:
-            team_reward = float(np.clip(team_reward, -self.reward_clip, self.reward_clip))
+        team_reward = self._transform_reward(team_reward)
 
         info["sparse_reward"] = float(sparse_reward)
         info["shaped_reward"] = float(shaped_reward)

@@ -277,6 +277,9 @@ def main() -> None:
                    help="Dense shaping needed since CNN starts from scratch")
     p.add_argument("--reward-shaping-end", type=float, default=0.0)
     p.add_argument("--reward-clip", type=float, default=5.0)
+    p.add_argument("--reward-transform", type=str, default="symlog",
+                   choices=OvercookedRLWrapper.REWARD_TRANSFORMS,
+                   help="How to scale rewards: clip (hard), symlog (smooth log compression), none")
 
     p.add_argument("--n-envs", type=int, default=8)
     p.add_argument("--lr", type=float, default=3e-4,
@@ -333,6 +336,7 @@ def main() -> None:
         planner_cache_dir=args.planner_cache_dir,
         reward_shaping_coef=args.reward_shaping_start,
         reward_clip=args.reward_clip,
+        reward_transform=args.reward_transform,
         player_idx=player_idx,
     )
 
@@ -397,7 +401,7 @@ def main() -> None:
           f"(BC prob {args.bc_prob_start:.0%} -> {args.bc_prob_end:.0%})")
     print(f"  Snapshot refresh:     every {args.snapshot_freq:,} steps")
     print(f"  Reward shaping:       {args.reward_shaping_start} -> {args.reward_shaping_end}")
-    print(f"  Reward clip:          {args.reward_clip}")
+    print(f"  Reward transform:     {args.reward_transform} (clip={args.reward_clip})")
     print(f"  LR / clip / ent:      {args.lr} (decay) / {args.clip_range} / {args.ent_coef}")
     print(f"  Features dim:         {args.features_dim}")
     print(f"  n_epochs:             {args.n_epochs}")
@@ -425,6 +429,7 @@ def main() -> None:
         "reward_shaping_start": args.reward_shaping_start,
         "reward_shaping_end": args.reward_shaping_end,
         "reward_clip": args.reward_clip,
+        "reward_transform": args.reward_transform,
         "features_dim": args.features_dim,
         "n_envs": args.n_envs,
         "lr": args.lr,

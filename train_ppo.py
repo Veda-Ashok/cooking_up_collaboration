@@ -286,6 +286,9 @@ def _parse_args() -> argparse.Namespace:
                    help="Reward shaping coef at start (0=sparse only, recommended for BC init)")
     p.add_argument("--reward-shaping-end", type=float, default=0.0)
     p.add_argument("--reward-clip", type=float, default=5.0)
+    p.add_argument("--reward-transform", type=str, default="clip",
+                   choices=OvercookedRLWrapper.REWARD_TRANSFORMS,
+                   help="How to scale rewards: clip (hard), symlog (smooth log compression), none")
 
     p.add_argument("--self-play-steps", type=int, default=0,
                    help="Steps of self-play before BC anneal (0=skip)")
@@ -361,6 +364,7 @@ def main() -> None:
             planner_cache_dir=args.planner_cache_dir,
             reward_shaping_coef=args.reward_shaping_start,
             reward_clip=args.reward_clip,
+            reward_transform=args.reward_transform,
             player_idx=player_idx,
         )
     else:
@@ -369,6 +373,7 @@ def main() -> None:
             horizon=args.horizon, planner_cache_dir=args.planner_cache_dir,
             reward_shaping_coef=args.reward_shaping_start,
             reward_clip=args.reward_clip,
+            reward_transform=args.reward_transform,
             player_idx=player_idx,
         )
         check_env(env)
@@ -436,6 +441,7 @@ def main() -> None:
     print(f"  Anneal steps:         {args.anneal_steps:,} "
           f"(BC prob {args.bc_prob_start:.0%} -> {args.bc_prob_end:.0%})")
     print(f"  Reward shaping:       {args.reward_shaping_start} -> {args.reward_shaping_end}")
+    print(f"  Reward transform:     {args.reward_transform} (clip={args.reward_clip})")
     print(f"  LR / clip / ent:      {args.lr} / {args.clip_range} / {args.ent_coef}")
     print(f"  Total:                {total_timesteps:,} steps")
 
@@ -463,6 +469,7 @@ def main() -> None:
         "reward_shaping_start": args.reward_shaping_start,
         "reward_shaping_end": args.reward_shaping_end,
         "reward_clip": args.reward_clip,
+        "reward_transform": args.reward_transform,
         "n_envs": args.n_envs,
         "lr": args.lr,
         "n_steps": args.n_steps,
@@ -493,7 +500,7 @@ def main() -> None:
             "input_dim": obs_dim,
             "num_actions": num_actions,
             "sampling_mode": "sample",
-            "sampling_temperature": 1.0,
+            "sampling_temperature": 1.2,
             "deterministic": False,
             "planner_cache_dir": ".cache/overcooked_planners",
         }

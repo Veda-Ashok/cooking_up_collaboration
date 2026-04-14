@@ -28,7 +28,10 @@ class LinearRewardShapingCallback(BaseCallback):
     @staticmethod
     def _unwrap_to_rl(env):
         """Unwrap through Monitor/etc. to reach OvercookedRLWrapper."""
-        while hasattr(env, "env") and not hasattr(env, "reward_shaping_coef"):
+        while hasattr(env, "env") and not (
+            "reward_shaping_coef" in getattr(env, "__dict__", {})
+            and "reward_transform" in getattr(env, "__dict__", {})
+        ):
             env = env.env
         return env
 
