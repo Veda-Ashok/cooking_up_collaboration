@@ -1,3 +1,5 @@
 raylib
 Box2D
 vgamepad
+torch
+numpy

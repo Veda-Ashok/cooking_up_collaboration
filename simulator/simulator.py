@@ -11,7 +11,7 @@ from ravioli.menu import Menu
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 TARGET_FPS = 60
-EXPORT_EVERY_N_FRAMES = 4
+EXPORT_EVERY_N_FRAMES = 1
 DEFAULT_LEVEL = "level_1_1"
 
 
@@ -22,6 +22,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--player-2", choices=agent_ids, help="Agent for player 2.")
     parser.add_argument("--level", default=DEFAULT_LEVEL, help="Level file to load, with or without the .json suffix.")
     parser.add_argument("--headless", action="store_true", help="Run without opening a window and simulate as fast as possible.")
+    parser.add_argument(
+        "--no-export-trajectories",
+        dest="export_trajectories",
+        action="store_false",
+        help="Do not write trajectory .jsonl export files while running the simulator.",
+    )
+    parser.set_defaults(export_trajectories=True)
     return parser
 
 
@@ -63,18 +70,18 @@ def init_window() -> None:
         rl.set_gamepad_mappings(gamecontroller_db.read_text(encoding="utf-8"))
 
 
-def create_level(level_info: dict[str, str], headless: bool) -> Level:
+def create_level(level_info: dict[str, str], headless: bool, export_trajectories: bool) -> Level:
     return Level(
         level_info,
-        export_state=True,
+        export_state=export_trajectories,
         export_every_n_frames=EXPORT_EVERY_N_FRAMES,
         headless=headless,
         screen_size=(WINDOW_WIDTH, WINDOW_HEIGHT),
     )
 
 
-def run_headless(level_info: dict[str, str]) -> None:
-    level = create_level(level_info, headless=True)
+def run_headless(level_info: dict[str, str], export_trajectories: bool) -> None:
+    level = create_level(level_info, headless=True, export_trajectories=export_trajectories)
     fixed_delta_time = 1.0 / TARGET_FPS
     try:
         while True:
@@ -89,7 +96,11 @@ def run_windowed(args: argparse.Namespace, level_file: str) -> None:
     level = None
 
     if should_skip_menu(args):
-        level = create_level(build_level_info(args, level_file), headless=False)
+        level = create_level(
+            build_level_info(args, level_file),
+            headless=False,
+            export_trajectories=args.export_trajectories,
+        )
     else:
         menu = Menu()
         apply_cli_defaults_to_menu(menu, args, level_file)
@@ -98,7 +109,7 @@ def run_windowed(args: argparse.Namespace, level_file: str) -> None:
         if level is None:
             level_info = menu.update()
             if level_info is not None:
-                level = create_level(level_info, headless=False)
+                level = create_level(level_info, headless=False, export_trajectories=args.export_trajectories)
         else:
             level.update(rl.get_frame_time())
 
@@ -136,7 +147,7 @@ def main() -> None:
     level_file = validate_args(parser, args)
 
     if args.headless:
-        run_headless(build_level_info(args, level_file))
+        run_headless(build_level_info(args, level_file), export_trajectories=args.export_trajectories)
         return
 
     run_windowed(args, level_file)
