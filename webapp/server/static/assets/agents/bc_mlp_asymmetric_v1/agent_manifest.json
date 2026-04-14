@@ -1,0 +1,18 @@
+{
+  "type": "bc_torch",
+  "model_type": "mlp",
+  "checkpoint": "best.pt",
+  "sampling_mode": "sample",
+  "sampling_temperature": 1.0,
+  "supported_layouts": [
+    "asymmetric_advantages"
+  ],
+  "input_dim": 96,
+  "num_actions": 6,
+  "mlp_hidden": [
+    64,
+    64
+  ],
+  "dropout": 0.0,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}
