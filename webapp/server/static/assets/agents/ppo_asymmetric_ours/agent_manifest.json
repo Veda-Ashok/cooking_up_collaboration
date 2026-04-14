@@ -4,7 +4,7 @@
   "policy": "MlpPolicy",
   "checkpoint": "best_model.zip",
   "supported_layouts": [
-    "cramped_room"
+    "asymmetric_advantages"
   ],
   "input_dim": 96,
   "num_actions": 6,

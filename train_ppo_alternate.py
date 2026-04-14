@@ -96,7 +96,7 @@ def _parse_args() -> argparse.Namespace:
 
     p.add_argument("--updates-per-player", type=int, default=5,
                    help="Number of alternating PPO update chunks for each player.")
-    p.add_argument("--steps-per-update", type=int, default=50_000,
+    p.add_argument("--steps-per-update", type=int, default=100_000,
                    help="PPO timesteps per player update chunk.")
     p.add_argument("--start-player", type=int, default=0, choices=(0, 1))
 
