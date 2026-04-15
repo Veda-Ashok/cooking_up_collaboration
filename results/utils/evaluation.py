@@ -71,7 +71,10 @@ def _role_swap_series(config: dict[str, Any]) -> list[tuple[str, str, str]]:
 
 
 def _config_signature(config: dict[str, Any]) -> str:
-    serializable = {k: v for k, v in config.items() if not k.startswith("_")}
+    serializable = {
+        key: config.get(key)
+        for key in ("layouts", "agents", "final_methods", "heatmap_agents", "role_swap")
+    }
     encoded = json.dumps(serializable, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -251,12 +254,20 @@ def evaluate_required_pairs(
     if output.exists() and not force:
         with open(output, "r", encoding="utf-8") as file_handle:
             cached = json.load(file_handle)
+        required_keys = {
+            pair.cache_key for pair in required_pair_specs(config, include_heatmap, include_role_swap)
+        }
+        cached_keys = set(cached.get("pair_results", {}).keys())
         if (
             cached.get("n_episodes") == n_episodes
             and cached.get("horizon") == horizon
             and cached.get("seed") == seed
-            and cached.get("config_signature") == signature
+            and required_keys.issubset(cached_keys)
         ):
+            if cached.get("config_signature") != signature:
+                cached["config_signature"] = signature
+                with open(output, "w", encoding="utf-8") as file_handle:
+                    json.dump(cached, file_handle, indent=2)
             return cached
 
     pair_results: dict[str, Any] = {}

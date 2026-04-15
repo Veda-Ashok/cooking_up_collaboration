@@ -45,6 +45,7 @@ METHOD_COLORS = {
     "PPO + BC": PALETTE["blue_secondary"],
     "PPO Self-Play": PALETTE["blue_main"],
     "Random": PALETTE["red_2"],
+    "Human-Human": PALETTE["highlight"],
     "PPO=P0": PALETTE["blue_main"],
     "PPO=P1": PALETTE["teal"],
 }

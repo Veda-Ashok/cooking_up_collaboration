@@ -204,10 +204,11 @@ python generate_results.py --n-episodes 50 --horizon 400 --force-eval
 This evaluates each configured pairing for 50 episodes of 400 steps and writes:
 
 - rollout data to `results/data/rollout_evaluation.json`
+- human-human reference stats to `results/data/human_human_reference.json`
 - summary CSV to `results/data/rollout_summary.csv`
 - plots to `results/plots/`
 
-The checkpoint paths, PPO TensorBoard log paths, plotted methods, and layout labels are configured in `results/config.json`. After the first full run, omit `--force-eval` to reuse cached rollout data and only regenerate plots:
+The checkpoint paths, PPO TensorBoard log paths, human-human trajectory directory, plotted methods, and layout labels are configured in `results/config.json`. The human-human reference plot uses recorded human-human episodes from `data/trajectories`; those episodes are usually about 800 steps, so it is a reference plot rather than an apples-to-apples 400-step comparison. After the first full run, omit `--force-eval` to reuse cached rollout data and only regenerate plots:
 
 ```powershell
 python generate_results.py --n-episodes 50 --horizon 400

@@ -124,6 +124,11 @@
       }
     ]
   },
+  "human_human": {
+    "label": "Human-Human",
+    "trajectories_dir": "data/trajectories",
+    "note": "Human-human trajectories use their recorded episode length, which is usually about 800 steps, not the 400-step agent evaluation horizon."
+  },
   "final_methods": [
     {
       "label": "BC MLP",

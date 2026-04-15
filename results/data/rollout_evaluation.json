@@ -2,7 +2,7 @@
   "n_episodes": 50,
   "horizon": 400,
   "seed": 0,
-  "config_signature": "dd15e2caae8bebc2ecc208dd56ef6e63c900d95065063fc57333d2446e3641d0",
+  "config_signature": "c8d5abc6e4427d7a6559f5e55f8ef1955c09aeb1818a03a1cad84299edf7a94f",
   "pair_results": {
     "cramped_room::bc_mlp+bc_mlp": {
       "layout": "cramped_room",

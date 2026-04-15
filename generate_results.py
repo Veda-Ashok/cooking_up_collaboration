@@ -12,6 +12,7 @@ from results.utils.evaluation import (
     evaluate_required_pairs,
     role_swap_bar_data,
 )
+from results.utils.human_human import collect_human_human_reference, human_reference_bar_data
 from results.utils.plot_bars import plot_grouped_bars, plot_small_multipanel_bars
 from results.utils.plot_heatmap import plot_heatmap_grid
 from results.utils.tensorboard_curves import (
@@ -48,10 +49,13 @@ def _write_final_summary_csv(evaluation_payload: dict[str, Any], output_path: Pa
         )
     if not rows:
         return
-    with open(output_path, "w", newline="", encoding="utf-8") as file_handle:
-        writer = csv.DictWriter(file_handle, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
+    try:
+        with open(output_path, "w", newline="", encoding="utf-8") as file_handle:
+            writer = csv.DictWriter(file_handle, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+    except PermissionError:
+        print(f"[warn] Could not update {output_path}; it may be open in another app.")
 
 
 def _metric_label(metric: str) -> str:
@@ -64,6 +68,14 @@ def _metric_label(metric: str) -> str:
     if metric == "episode/mean_total_reward":
         return "Mean total reward per episode"
     return metric.replace("_", " ").title()
+
+
+def _human_reference_metric_label(metric: str) -> str:
+    if metric == "mean_deliveries":
+        return "Mean deliveries per episode"
+    if metric == "mean_reward":
+        return "Mean sparse reward per episode"
+    return _metric_label(metric)
 
 
 def generate_all(args: argparse.Namespace) -> None:
@@ -143,6 +155,37 @@ def generate_all(args: argparse.Namespace) -> None:
             legend_inside=True,
         )
         print(f"[plot] final_performance_{metric}")
+
+    human_rows = collect_human_human_reference(config)
+    _write_json(
+        {
+            "note": config.get("human_human", {}).get("note", ""),
+            "rows": human_rows,
+        },
+        data_dir / "human_human_reference.json",
+    )
+    if human_rows:
+        for metric in ("mean_reward", "mean_deliveries"):
+            groups, series, values, errors = human_reference_bar_data(
+                config,
+                evaluation_payload,
+                human_rows,
+                metric=metric,
+            )
+            plot_grouped_bars(
+                groups=groups,
+                series_names=series,
+                values=values,
+                errors=errors,
+                ylabel=_human_reference_metric_label(metric),
+                title="Agent Performance With Human-Human Reference",
+                output_dir=plot_dir,
+                stem=f"human_reference_{metric}",
+                annotate=False,
+                figsize=(15.0, 7.4),
+                legend_inside=True,
+            )
+            print(f"[plot] human_reference_{metric}")
 
     if not args.skip_heatmap:
         heatmap_metric = args.heatmap_metric

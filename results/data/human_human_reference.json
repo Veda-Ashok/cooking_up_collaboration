@@ -1,0 +1,41 @@
+{
+  "note": "Human-human trajectories use their recorded episode length, which is usually about 800 steps, not the 400-step agent evaluation horizon.",
+  "rows": [
+    {
+      "layout": "cramped_room",
+      "layout_label": "Cramped",
+      "n_episodes": 34,
+      "mean_reward": 67.05882352941177,
+      "stderr_reward": 7.48157380984071,
+      "mean_deliveries": 3.3529411764705883,
+      "stderr_deliveries": 0.37407869049203546,
+      "mean_steps": 811.9117647058823,
+      "min_steps": 213.0,
+      "max_steps": 868.0
+    },
+    {
+      "layout": "asymmetric_advantages",
+      "layout_label": "Asymmetric",
+      "n_episodes": 26,
+      "mean_reward": 60.0,
+      "stderr_reward": 10.262818510866412,
+      "mean_deliveries": 3.0,
+      "stderr_deliveries": 0.5131409255433206,
+      "mean_steps": 786.1153846153846,
+      "min_steps": 230.0,
+      "max_steps": 868.0
+    },
+    {
+      "layout": "coordination_ring",
+      "layout_label": "Coordination",
+      "n_episodes": 29,
+      "mean_reward": 39.310344827586206,
+      "stderr_reward": 4.193053382265719,
+      "mean_deliveries": 1.9655172413793103,
+      "stderr_deliveries": 0.20965266911328595,
+      "mean_steps": 828.1379310344828,
+      "min_steps": 564.0,
+      "max_steps": 863.0
+    }
+  ]
+}
