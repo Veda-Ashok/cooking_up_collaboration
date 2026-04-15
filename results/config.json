@@ -1,0 +1,187 @@
+{
+  "layouts": [
+    {
+      "key": "cramped_room",
+      "label": "Cramped"
+    },
+    {
+      "key": "asymmetric_advantages",
+      "label": "Asymmetric"
+    },
+    {
+      "key": "coordination_ring",
+      "label": "Coordination"
+    }
+  ],
+  "agents": {
+    "cramped_room": {
+      "bc_mlp": {
+        "label": "BC MLP",
+        "agent_dir": "webapp/server/static/assets/agents/bc_mlp_cramped_v1",
+        "checkpoint_path": "webapp/server/static/assets/agents/bc_mlp_cramped_v1/best.pt"
+      },
+      "bc_lstm": {
+        "label": "BC LSTM",
+        "agent_dir": "webapp/server/static/assets/agents/bc_lstm_cramped_v1",
+        "checkpoint_path": "webapp/server/static/assets/agents/bc_lstm_cramped_v1/best.pt"
+      },
+      "ppo": {
+        "label": "PPO",
+        "agent_dir": "webapp/server/static/assets/agents/ppo_cramped_ours",
+        "checkpoint_path": "webapp/server/static/assets/agents/ppo_cramped_ours/best_model.zip"
+      }
+    },
+    "asymmetric_advantages": {
+      "bc_mlp": {
+        "label": "BC MLP",
+        "agent_dir": "webapp/server/static/assets/agents/bc_mlp_asymmetric_v1",
+        "checkpoint_path": "webapp/server/static/assets/agents/bc_mlp_asymmetric_v1/best.pt"
+      },
+      "bc_lstm": {
+        "label": "BC LSTM",
+        "agent_dir": "webapp/server/static/assets/agents/bc_lstm_asymmetric_v1",
+        "checkpoint_path": "webapp/server/static/assets/agents/bc_lstm_asymmetric_v1/best.pt"
+      },
+      "ppo": {
+        "label": "PPO",
+        "agent_dir": "webapp/server/static/assets/agents/ppo_asymmetric_ours",
+        "checkpoint_path": "webapp/server/static/assets/agents/ppo_asymmetric_ours/best_model.zip"
+      }
+    },
+    "coordination_ring": {
+      "bc_mlp": {
+        "label": "BC MLP",
+        "agent_dir": "webapp/server/static/assets/agents/bc_mlp_coordination_v1",
+        "checkpoint_path": "webapp/server/static/assets/agents/bc_mlp_coordination_v1/best.pt"
+      },
+      "bc_lstm": {
+        "label": "BC LSTM",
+        "agent_dir": "webapp/server/static/assets/agents/bc_lstm_coordination_v1",
+        "checkpoint_path": "webapp/server/static/assets/agents/bc_lstm_coordination_v1/best.pt"
+      },
+      "ppo": {
+        "label": "PPO",
+        "agent_dir": "webapp/server/static/assets/agents/ppo_coordination_ours",
+        "checkpoint_path": "webapp/server/static/assets/agents/ppo_coordination_ours/best_model.zip"
+      }
+    }
+  },
+  "bc_metrics": [
+    {
+      "layout": "cramped_room",
+      "model_label": "BC MLP",
+      "config_path": "trained_models/bc/bc_mlp_cramped_v1/config.json",
+      "metrics_path": "trained_models/bc/bc_mlp_cramped_v1/metrics.json"
+    },
+    {
+      "layout": "cramped_room",
+      "model_label": "BC LSTM",
+      "config_path": "trained_models/bc/bc_lstm_cramped_v1/config.json",
+      "metrics_path": "trained_models/bc/bc_lstm_cramped_v1/metrics.json"
+    },
+    {
+      "layout": "asymmetric_advantages",
+      "model_label": "BC MLP",
+      "config_path": "trained_models/bc/bc_mlp_asymmetric_v1/config.json",
+      "metrics_path": "trained_models/bc/bc_mlp_asymmetric_v1/metrics.json"
+    },
+    {
+      "layout": "asymmetric_advantages",
+      "model_label": "BC LSTM",
+      "config_path": "trained_models/bc/bc_lstm_asymmetric_v1/config.json",
+      "metrics_path": "trained_models/bc/bc_lstm_asymmetric_v1/metrics.json"
+    },
+    {
+      "layout": "coordination_ring",
+      "model_label": "BC MLP",
+      "config_path": "trained_models/bc/bc_mlp_coordination_v1/config.json",
+      "metrics_path": "trained_models/bc/bc_mlp_coordination_v1/metrics.json"
+    },
+    {
+      "layout": "coordination_ring",
+      "model_label": "BC LSTM",
+      "config_path": "trained_models/bc/bc_lstm_coordination_v1/config.json",
+      "metrics_path": "trained_models/bc/bc_lstm_coordination_v1/metrics.json"
+    }
+  ],
+  "training_curves": {
+    "tag": "episode/mean_sparse_reward",
+    "runs": [
+      {
+        "layout": "cramped_room",
+        "label": "Cramped",
+        "log_dir": "logs/ppo_curriculum/ppo_cramped_v2_1"
+      },
+      {
+        "layout": "asymmetric_advantages",
+        "label": "Asymmetric",
+        "log_dir": "logs/ppo_curriculum/ppo_asymmetric_v4_1"
+      },
+      {
+        "layout": "coordination_ring",
+        "label": "Coordination",
+        "log_dir": "logs/ppo_curriculum/ppo_coordination_v4_1"
+      }
+    ]
+  },
+  "final_methods": [
+    {
+      "label": "BC MLP",
+      "p0": "bc_mlp",
+      "p1": "bc_mlp"
+    },
+    {
+      "label": "BC LSTM",
+      "p0": "bc_lstm",
+      "p1": "bc_lstm"
+    },
+    {
+      "label": "PPO + BC",
+      "p0": "ppo",
+      "p1": "bc_mlp"
+    },
+    {
+      "label": "PPO Self-Play",
+      "p0": "ppo",
+      "p1": "ppo"
+    },
+    {
+      "label": "Random",
+      "p0": "random",
+      "p1": "random"
+    }
+  ],
+  "heatmap_agents": [
+    {
+      "label": "BC MLP",
+      "key": "bc_mlp"
+    },
+    {
+      "label": "BC LSTM",
+      "key": "bc_lstm"
+    },
+    {
+      "label": "PPO",
+      "key": "ppo"
+    },
+    {
+      "label": "Random",
+      "key": "random"
+    }
+  ],
+  "role_swap": {
+    "partner": "bc_mlp",
+    "series": [
+      {
+        "label": "PPO=P0",
+        "p0": "ppo",
+        "p1": "bc_mlp"
+      },
+      {
+        "label": "PPO=P1",
+        "p0": "bc_mlp",
+        "p1": "ppo"
+      }
+    ]
+  }
+}

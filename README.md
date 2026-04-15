@@ -12,6 +12,7 @@ cooking_up_collaboration/
 ├── train_ppo_lstm.py           # Recurrent PPO from BC LSTM init
 ├── evaluate_bc_rollouts.py     # BC self-play evaluation & video
 ├── evaluate_rl_rollouts.py     # RL self-play / RL+BC evaluation & video
+├── generate_results.py         # Course-project plots and rollout summaries
 ├── live_rollout.py             # RL live viewer & self-play
 │
 ├── rl/                         # RL utilities
@@ -189,6 +190,34 @@ python evaluate_rl_rollouts.py \
 ```
 
 Produces the same metrics as `evaluate_bc_rollouts.py`: mean reward, delivery rate, cook started rate, stuck rate, per-episode breakdowns.
+
+---
+
+## Project Results / Plots
+
+Generate the course-project result plots from the configured BC/PPO checkpoints and TensorBoard logs:
+
+```powershell
+python generate_results.py --n-episodes 50 --horizon 400 --force-eval
+```
+
+This evaluates each configured pairing for 50 episodes of 400 steps and writes:
+
+- rollout data to `results/data/rollout_evaluation.json`
+- summary CSV to `results/data/rollout_summary.csv`
+- plots to `results/plots/`
+
+The checkpoint paths, PPO TensorBoard log paths, plotted methods, and layout labels are configured in `results/config.json`. After the first full run, omit `--force-eval` to reuse cached rollout data and only regenerate plots:
+
+```powershell
+python generate_results.py --n-episodes 50 --horizon 400
+```
+
+To regenerate only BC validation and PPO training-curve plots without rollouts:
+
+```powershell
+python generate_results.py --skip-rollouts
+```
 
 ---
 
