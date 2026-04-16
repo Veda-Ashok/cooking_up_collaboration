@@ -10,9 +10,14 @@ node_modules/
 .venv/
 venv/
 webapp/server/data/
+*.sln
 
 data/trajectories/
 data/*csv
 
 trained_models/
 .cache/
+
+simulator/ravioli/exports/
+mod/assembly_export/
+simulator/ravioli/training_runs/
