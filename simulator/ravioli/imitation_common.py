@@ -68,7 +68,7 @@ COUNT_SCALE = 5.0
 
 @dataclass
 class FeatureSchema:
-    holder_specs: list[dict[str, str]]
+    holder_specs: list[dict[str, Any]]
     position_scale_x: float
     position_scale_y: float
     distance_scale: float
@@ -83,11 +83,19 @@ class FeatureSchema:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "FeatureSchema":
+        holder_specs = []
+        for holder_spec in payload.get("holder_specs", []):
+            normalized_spec: dict[str, Any] = {
+                "id": str(holder_spec.get("id", "")),
+                "name": str(holder_spec["name"]),
+            }
+            position = holder_spec.get("position")
+            if isinstance(position, list) and len(position) == 2:
+                normalized_spec["position"] = [float(position[0]), float(position[1])]
+            holder_specs.append(normalized_spec)
+
         return cls(
-            holder_specs=[
-                {"id": str(holder_spec["id"]), "name": str(holder_spec["name"])}
-                for holder_spec in payload.get("holder_specs", [])
-            ],
+            holder_specs=holder_specs,
             position_scale_x=float(payload.get("position_scale_x", 1.0)),
             position_scale_y=float(payload.get("position_scale_y", 1.0)),
             distance_scale=float(payload.get("distance_scale", 1.0)),
@@ -227,7 +235,7 @@ def action_id_to_input_state(action_id: int) -> dict[str, Any]:
 
 
 def build_feature_schema(states: list[dict[str, Any]]) -> FeatureSchema:
-    holder_specs_by_id: dict[str, dict[str, str]] = {}
+    holder_specs_by_signature: dict[tuple[str, float, float], dict[str, Any]] = {}
     max_x = 1.0
     max_y = 1.0
 
@@ -251,14 +259,21 @@ def build_feature_schema(states: list[dict[str, Any]]) -> FeatureSchema:
             object_name = str(obj.get("name", ""))
             object_id = str(obj.get("id", ""))
             if object_name in HOLDER_TYPES and object_id:
-                holder_specs_by_id[object_id] = {
+                position_tuple = _get_position(obj)
+                holder_specs_by_signature[_holder_signature(object_name, position_tuple)] = {
                     "id": object_id,
                     "name": object_name,
+                    "position": [round(position_tuple[0], 3), round(position_tuple[1], 3)],
                 }
 
     holder_specs = sorted(
-        holder_specs_by_id.values(),
-        key=lambda holder_spec: (holder_spec["name"], holder_spec["id"]),
+        holder_specs_by_signature.values(),
+        key=lambda holder_spec: (
+            holder_spec["name"],
+            holder_spec.get("position", [0.0, 0.0])[0],
+            holder_spec.get("position", [0.0, 0.0])[1],
+            holder_spec["id"],
+        ),
     )
     return FeatureSchema(
         holder_specs=holder_specs,
@@ -290,6 +305,11 @@ def featurize_state_for_player(
         for obj in objects
         if isinstance(obj, dict) and obj.get("name") in HOLDER_TYPES and obj.get("id") is not None
     }
+    holders_by_signature = {
+        _holder_signature(str(obj.get("name")), _get_position(obj)): obj
+        for obj in objects
+        if isinstance(obj, dict) and obj.get("name") in HOLDER_TYPES
+    }
 
     self_player = players_by_id.get(f"player_{player_num}")
     if self_player is None:
@@ -319,10 +339,59 @@ def featurize_state_for_player(
         features.extend(_encode_entity_summary(other_player, objects_by_id, objects, allow_player_fallback=True))
 
     for holder_spec in schema.holder_specs:
-        holder = holders_by_id.get(holder_spec["id"])
+        holder = _find_holder_for_spec(holder_spec, holders_by_id, holders_by_signature, holders_by_id.values())
         features.extend(_encode_holder(holder, holder_spec, self_position, objects_by_id, objects, schema))
 
     return np.asarray(features, dtype=np.float32)
+
+
+def _holder_signature(name: str, position: tuple[float, float]) -> tuple[str, float, float]:
+    return str(name), round(float(position[0]), 2), round(float(position[1]), 2)
+
+
+def _get_spec_position(holder_spec: dict[str, Any]) -> tuple[float, float] | None:
+    position = holder_spec.get("position")
+    if not isinstance(position, list) or len(position) != 2:
+        return None
+    return float(position[0]), float(position[1])
+
+
+def _find_holder_for_spec(
+    holder_spec: dict[str, Any],
+    holders_by_id: dict[Any, dict[str, Any]],
+    holders_by_signature: dict[tuple[str, float, float], dict[str, Any]],
+    holders: Any,
+) -> dict[str, Any] | None:
+    holder_name = str(holder_spec.get("name", ""))
+    spec_position = _get_spec_position(holder_spec)
+    if spec_position is not None:
+        holder = holders_by_signature.get(_holder_signature(holder_name, spec_position))
+        if holder is not None:
+            return holder
+
+    holder_id = holder_spec.get("id")
+    if holder_id:
+        holder = holders_by_id.get(holder_id)
+        if holder is not None:
+            return holder
+
+    if spec_position is None:
+        return None
+
+    best_holder = None
+    best_distance = float("inf")
+    for holder in holders:
+        if str(holder.get("name")) != holder_name:
+            continue
+        holder_position = _get_position(holder)
+        distance = math.hypot(holder_position[0] - spec_position[0], holder_position[1] - spec_position[1])
+        if distance < best_distance:
+            best_holder = holder
+            best_distance = distance
+
+    if best_distance <= 0.2:
+        return best_holder
+    return None
 
 
 def _encode_slot(player_num: int) -> list[float]:
@@ -362,14 +431,20 @@ def _encode_facing(entity: dict[str, Any]) -> list[float]:
 
 def _encode_holder(
     holder: dict[str, Any] | None,
-    holder_spec: dict[str, str],
+    holder_spec: dict[str, Any],
     self_position: tuple[float, float],
     objects_by_id: dict[str, dict[str, Any]],
     objects: list[dict[str, Any]],
     schema: FeatureSchema,
 ) -> list[float]:
     if holder is None:
-        return [0.0, 0.0, 0.0, 0.0] + _encode_one_hot(holder_spec["name"], HOLDER_TYPES) + _encode_empty_summary() + [0.0]
+        spec_position = _get_spec_position(holder_spec)
+        relative_position = (
+            _encode_relative_position(spec_position, self_position, schema)
+            if spec_position is not None
+            else [0.0, 0.0, 0.0]
+        )
+        return [0.0] + relative_position + _encode_one_hot(holder_spec["name"], HOLDER_TYPES) + _encode_empty_summary() + [0.0]
 
     features = [1.0]
     features.extend(_encode_relative_position(_get_position(holder), self_position, schema))

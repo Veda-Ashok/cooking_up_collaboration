@@ -63,13 +63,25 @@ Typical outputs:
 - `preprocessing_report.json`: dataset and featurization summary
 - `feature_schema.json`: feature layout used by the model
 
+The feature schema is layout-position based for holder objects such as tables, stoves, sinks, and stations. This avoids coupling the trained policy to object IDs, which can differ between the local simulator export and the live Overcooked extraction mod.
+
+At runtime, the imitation agent filters impossible button-only predictions. If the network predicts `CARRY` or `INTERACT` while no valid target is nearby and aligned, the agent falls back to the next-best valid action. Button actions are also treated as short impulses with cooldowns, matching human key-press semantics and preventing repeated `CARRY`/`INTERACT` outputs from toggling the same object forever.
+
 Examples:
 
 ```powershell
 python trainer.py --model mlp
 ```
 
-Trains an MLP on all JSONL files in `ravioli/exports/` using the default settings.
+Trains the recommended MLP on all JSONL files in `ravioli/exports/`. The current defaults are:
+
+- `--mlp-hidden 512,256`
+- `--lr 0.001`
+- `--epochs 8`
+- `--batch-size 1024`
+- `--split-mode chronological`
+- `--frame-stride 2`
+- `--keep-action-changes`
 
 ```powershell
 python trainer.py --model lstm --seq-len 32 --hidden-dim 256 --num-layers 2

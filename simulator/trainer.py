@@ -38,6 +38,9 @@ class BCConfig:
     data_source: str
     player_mode: str
     player_idx: int | None
+    split_mode: str
+    frame_stride: int
+    keep_action_changes: bool
     train_ratio: float
     val_ratio: float
     seed: int
@@ -439,6 +442,8 @@ def load_raw_trials(
     data_source: str,
     player_mode: str,
     player_idx: int | None,
+    frame_stride: int,
+    keep_action_changes: bool,
 ) -> tuple[list[RawTrial], dict[str, Any]]:
     selected_slots = [player_idx] if player_mode == "single" else [0, 1]
     raw_trials: list[RawTrial] = []
@@ -446,6 +451,7 @@ def load_raw_trials(
     invalid_frames = 0
     empty_trials = 0
     source_skipped_frames = 0
+    stride_skipped_frames = 0
     kept_source_counts = {"human": 0, "synthetic": 0}
 
     for export_path in export_paths:
@@ -483,6 +489,14 @@ def load_raw_trials(
                 kept_source_counts["human" if is_human else "synthetic"] += 1
                 valid_rows.append(row)
 
+            valid_rows, skipped_by_stride = filter_rows_by_stride(
+                valid_rows,
+                slot=slot,
+                frame_stride=frame_stride,
+                keep_action_changes=keep_action_changes,
+            )
+            stride_skipped_frames += skipped_by_stride
+
             if valid_rows:
                 raw_trials.append(
                     RawTrial(
@@ -500,13 +514,50 @@ def load_raw_trials(
         "total_frames": total_frames,
         "invalid_frames": invalid_frames,
         "source_skipped_frames": source_skipped_frames,
+        "stride_skipped_frames": stride_skipped_frames,
         "raw_trial_count": len(raw_trials),
         "empty_trials": empty_trials,
         "selected_slots": selected_slots,
         "data_source": data_source,
+        "frame_stride": frame_stride,
+        "keep_action_changes": keep_action_changes,
         "kept_source_counts": kept_source_counts,
     }
     return raw_trials, report
+
+
+def filter_rows_by_stride(
+    rows: list[dict[str, Any]],
+    *,
+    slot: int,
+    frame_stride: int,
+    keep_action_changes: bool,
+) -> tuple[list[dict[str, Any]], int]:
+    if frame_stride <= 1 and not keep_action_changes:
+        return rows, 0
+
+    frame_stride = max(frame_stride, 1)
+    filtered_rows: list[dict[str, Any]] = []
+    previous_action_name: str | None = None
+
+    for row_index, row in enumerate(rows):
+        keep_row = row_index % frame_stride == 0
+
+        if keep_action_changes:
+            input_states = row.get("input_states", [])
+            input_state = input_states[slot] if isinstance(input_states, list) and len(input_states) > slot else None
+            try:
+                action_name = ID_TO_ACTION[input_state_to_action_id(input_state)]
+            except Exception:
+                action_name = previous_action_name
+            if previous_action_name is not None and action_name != previous_action_name:
+                keep_row = True
+            previous_action_name = action_name
+
+        if keep_row:
+            filtered_rows.append(row)
+
+    return filtered_rows, len(rows) - len(filtered_rows)
 
 
 def featurize_trials(
@@ -611,9 +662,20 @@ def split_by_trial_id(
     train_ratio: float,
     val_ratio: float,
     seed: int,
+    split_mode: str,
 ) -> tuple[list[FeaturizedTrial], list[FeaturizedTrial], list[FeaturizedTrial]]:
     if len(trials) < 3:
         raise RuntimeError("Need at least 3 featurized trials to create train/val/test splits")
+
+    if split_mode == "chronological":
+        return split_chronologically_by_source_trial(
+            trials,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+        )
+
+    if split_mode != "random_chunks":
+        raise ValueError(f"Unsupported split_mode={split_mode}")
 
     shuffled_trials = list(trials)
     random.Random(seed).shuffle(shuffled_trials)
@@ -631,6 +693,47 @@ def split_by_trial_id(
     if not train_trials or not val_trials or not test_trials:
         raise RuntimeError(
             "One or more data splits are empty after split_by_trial_id. "
+            "Adjust train_ratio/val_ratio or add more export files."
+        )
+
+    return train_trials, val_trials, test_trials
+
+
+def split_chronologically_by_source_trial(
+    trials: list[FeaturizedTrial],
+    *,
+    train_ratio: float,
+    val_ratio: float,
+) -> tuple[list[FeaturizedTrial], list[FeaturizedTrial], list[FeaturizedTrial]]:
+    grouped_trials: dict[str, list[FeaturizedTrial]] = {}
+    for trial in trials:
+        source_trial_id = trial.trial_id.split(":chunk_", 1)[0]
+        grouped_trials.setdefault(source_trial_id, []).append(trial)
+
+    train_trials: list[FeaturizedTrial] = []
+    val_trials: list[FeaturizedTrial] = []
+    test_trials: list[FeaturizedTrial] = []
+
+    for group in grouped_trials.values():
+        if len(group) < 3:
+            raise RuntimeError(
+                "Chronological split needs at least 3 chunks per source trial. "
+                "Reduce --trial-chunk-size or add more export data."
+            )
+
+        train_count = max(1, int(round(len(group) * train_ratio)))
+        val_count = max(1, int(round(len(group) * val_ratio)))
+        if train_count + val_count >= len(group):
+            val_count = max(1, len(group) - train_count - 1)
+        train_count = max(1, min(train_count, len(group) - val_count - 1))
+
+        train_trials.extend(group[:train_count])
+        val_trials.extend(group[train_count : train_count + val_count])
+        test_trials.extend(group[train_count + val_count :])
+
+    if not train_trials or not val_trials or not test_trials:
+        raise RuntimeError(
+            "One or more data splits are empty after chronological split. "
             "Adjust train_ratio/val_ratio or add more export files."
         )
 
@@ -675,6 +778,10 @@ def run_training(config: BCConfig) -> Path:
         raise ValueError(f"Unsupported data_source={config.data_source}")
     if config.player_mode not in {"both", "single"}:
         raise ValueError(f"Unsupported player_mode={config.player_mode}")
+    if config.split_mode not in {"random_chunks", "chronological"}:
+        raise ValueError(f"Unsupported split_mode={config.split_mode}")
+    if config.frame_stride <= 0:
+        raise ValueError(f"frame_stride must be positive, got {config.frame_stride}")
     if config.player_mode == "single" and config.player_idx not in (0, 1):
         raise ValueError(
             "player_idx must resolve to 0 or 1 for player_mode=single "
@@ -697,6 +804,8 @@ def run_training(config: BCConfig) -> Path:
         data_source=config.data_source,
         player_mode=config.player_mode,
         player_idx=config.player_idx,
+        frame_stride=config.frame_stride,
+        keep_action_changes=config.keep_action_changes,
     )
     if not raw_trials:
         raise RuntimeError("No valid trials found in the export data")
@@ -722,6 +831,7 @@ def run_training(config: BCConfig) -> Path:
         train_ratio=config.train_ratio,
         val_ratio=config.val_ratio,
         seed=config.seed,
+        split_mode=config.split_mode,
     )
 
     pin_memory = config.device.startswith("cuda")
@@ -928,12 +1038,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--player-mode", choices=("both", "single"), default="both", help="Train on both players or one slot.")
     parser.add_argument("--player-idx", type=int, default=None, help="Zero-based player index for single-player training: 0 or 1.")
     parser.add_argument("--player-slot", type=int, choices=(1, 2), default=None, help="Human-facing player slot for single-player training: 1 or 2.")
+    parser.add_argument("--split-mode", choices=("random_chunks", "chronological"), default="chronological", help="How to split chunked trials.")
+    parser.add_argument("--frame-stride", type=int, default=2, help="Keep every Nth frame after source/player filtering.")
+    parser.add_argument(
+        "--keep-action-changes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Always keep frames where the selected player's action changes.",
+    )
     parser.add_argument("--train-ratio", type=float, default=0.7, help="Fraction of trials for training.")
     parser.add_argument("--val-ratio", type=float, default=0.15, help="Fraction of trials for validation.")
     parser.add_argument("--seed", type=int, default=7, help="Random seed.")
-    parser.add_argument("--batch-size", type=int, default=256, help="Batch size.")
-    parser.add_argument("--epochs", type=int, default=20, help="Maximum training epochs.")
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate.")
+    parser.add_argument("--batch-size", type=int, default=1024, help="Batch size.")
+    parser.add_argument("--epochs", type=int, default=8, help="Maximum training epochs.")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW weight decay.")
     parser.add_argument("--num-workers", type=int, default=0, help="PyTorch DataLoader worker count.")
     parser.add_argument("--device", default="auto", help="Training device: auto, cpu, cuda, cuda:0, ...")
@@ -944,7 +1062,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout for both models.")
     parser.add_argument("--seq-len", type=int, default=16, help="Sequence length for LSTM training.")
     parser.add_argument("--trial-chunk-size", type=int, default=4096, help="Maximum contiguous frames per pseudo-trial before train/val/test splitting.")
-    parser.add_argument("--mlp-hidden", default="256,128", help="Comma-separated hidden sizes for the MLP.")
+    parser.add_argument("--mlp-hidden", default="512,256", help="Comma-separated hidden sizes for the MLP.")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clip value for LSTM.")
     parser.add_argument("--early-stop-patience", type=int, default=5, help="Stop after this many non-improving epochs.")
     return parser
@@ -964,6 +1082,9 @@ def config_from_args(args: argparse.Namespace) -> BCConfig:
         data_source=args.data_source,
         player_mode=args.player_mode,
         player_idx=resolved_player_idx,
+        split_mode=args.split_mode,
+        frame_stride=args.frame_stride,
+        keep_action_changes=args.keep_action_changes,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         seed=args.seed,
