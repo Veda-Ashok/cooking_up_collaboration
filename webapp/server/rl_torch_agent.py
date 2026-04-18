@@ -14,12 +14,12 @@ from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.planning.planners import MediumLevelActionManager, NO_COUNTERS_PARAMS
 from stable_baselines3 import PPO
 from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common import preprocessing as sb3_preprocessing
 from stable_baselines3.ppo import MlpPolicy as PPOMlpPolicy
 
-try:
-    from gymnasium import spaces
-except ImportError:
-    import gym.spaces as spaces
+# SB3 1.x expects gym spaces, while SB3 2.x expects gymnasium spaces.
+# Build synthetic checkpoint spaces from SB3's own module to avoid mixing them.
+spaces = sb3_preprocessing.spaces
 
 try:
     from sb3_contrib import RecurrentPPO
