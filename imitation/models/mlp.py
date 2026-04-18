@@ -12,7 +12,7 @@ class MLPPolicy(nn.Module):
     ):
         super().__init__()
         if hidden_dims is None:
-            hidden_dims = [256, 128]
+            hidden_dims = [64, 64]
 
         layers = []
         previous_dim = input_dim

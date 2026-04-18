@@ -616,8 +616,11 @@ class OvercookedGame(Game):
                 if manifest.get("type") == "bc_torch":
                     from bc_torch_agent import TorchBCAgent
                     return TorchBCAgent(agent_dir=agent_dir, agent_index=idx, device="cpu")
+                if manifest.get("type") == "rl_torch":
+                    from rl_torch_agent import TorchRLAgent
+                    return TorchRLAgent(agent_dir=agent_dir, agent_index=idx, device="cpu")
             except Exception as e:
-                raise IOError("Error loading BC torch agent\n{}".format(e.__repr__()))
+                raise IOError("Error loading torch manifest agent\n{}".format(e.__repr__()))
 
         if npc_id.lower().startswith("rllib"):
             try:

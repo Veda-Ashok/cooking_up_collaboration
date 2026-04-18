@@ -17,6 +17,14 @@ tensorflow>=2.4.0
 requests==2.23.0
 protobuf>=3.19.0,<4.0
 scipy
+numpy>=1.26,<2.0
 gym==0.26.2
-ray[rllib]>=2.0.0
+gymnasium==0.29.1
+ray==2.6.3
+dm-tree
+lz4
+scikit-image
+tensorboardX>=1.9
 torch
+stable-baselines3==2.7.1
+sb3-contrib==2.7.1

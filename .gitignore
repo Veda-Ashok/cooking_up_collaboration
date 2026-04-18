@@ -16,3 +16,8 @@ data/*csv
 
 trained_models/
 .cache/
+logs/
+
+csv_visualized/
+planner_cache/
+gameplays/

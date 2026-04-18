@@ -99,13 +99,17 @@ def build_dataloaders(
         raise ValueError("Training dataset is empty after preprocessing")
     if len(val_dataset) == 0:
         raise ValueError("Validation dataset is empty after preprocessing")
-    if len(test_dataset) == 0:
-        raise ValueError("Test dataset is empty after preprocessing")
 
     dataloaders = {
         "train": _make_loader(train_dataset, batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory),
         "val": _make_loader(val_dataset, batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory),
-        "test": _make_loader(test_dataset, batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory),
     }
-    datasets = {"train": train_dataset, "val": val_dataset, "test": test_dataset}
+    datasets: dict[str, Any] = {"train": train_dataset, "val": val_dataset}
+
+    if test_trials:
+        if len(test_dataset) == 0:
+            raise ValueError("Test dataset is empty after preprocessing")
+        dataloaders["test"] = _make_loader(test_dataset, batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+        datasets["test"] = test_dataset
+
     return dataloaders, datasets

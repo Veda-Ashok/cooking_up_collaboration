@@ -1,0 +1,74 @@
+[
+  {
+    "run_name": "bc_mlp_cramped_v1",
+    "model_type": "mlp",
+    "model_label": "BC MLP",
+    "layout": "cramped_room",
+    "layout_label": "Cramped",
+    "best_epoch": 15,
+    "best_val_loss": 0.7744586387293299,
+    "accuracy": 0.7214525139664805,
+    "macro_f1": 0.15831957391013493,
+    "weighted_f1": 0.6116087875506955
+  },
+  {
+    "run_name": "bc_lstm_cramped_v1",
+    "model_type": "lstm",
+    "model_label": "BC LSTM",
+    "layout": "cramped_room",
+    "layout_label": "Cramped",
+    "best_epoch": 5,
+    "best_val_loss": 0.738706799007649,
+    "accuracy": 0.7449420322800636,
+    "macro_f1": 0.3869270525003469,
+    "weighted_f1": 0.6935701210537799
+  },
+  {
+    "run_name": "bc_mlp_asymmetric_v1",
+    "model_type": "mlp",
+    "model_label": "BC MLP",
+    "layout": "asymmetric_advantages",
+    "layout_label": "Asymmetric",
+    "best_epoch": 20,
+    "best_val_loss": 0.9211321083763341,
+    "accuracy": 0.590329079919409,
+    "macro_f1": 0.3308535799137103,
+    "weighted_f1": 0.519855899017718
+  },
+  {
+    "run_name": "bc_lstm_asymmetric_v1",
+    "model_type": "lstm",
+    "model_label": "BC LSTM",
+    "layout": "asymmetric_advantages",
+    "layout_label": "Asymmetric",
+    "best_epoch": 7,
+    "best_val_loss": 0.7990886190572325,
+    "accuracy": 0.6698929628786153,
+    "macro_f1": 0.5528206063481852,
+    "weighted_f1": 0.6547344015680849
+  },
+  {
+    "run_name": "bc_mlp_coordination_v1",
+    "model_type": "mlp",
+    "model_label": "BC MLP",
+    "layout": "coordination_ring",
+    "layout_label": "Coordination",
+    "best_epoch": 10,
+    "best_val_loss": 1.1890875386241266,
+    "accuracy": 0.42981727574750833,
+    "macro_f1": 0.30878028370237653,
+    "weighted_f1": 0.3706081454328297
+  },
+  {
+    "run_name": "bc_lstm_coordination_v1",
+    "model_type": "lstm",
+    "model_label": "BC LSTM",
+    "layout": "coordination_ring",
+    "layout_label": "Coordination",
+    "best_epoch": 7,
+    "best_val_loss": 1.0490459042762401,
+    "accuracy": 0.5544303797468354,
+    "macro_f1": 0.5478681180768089,
+    "weighted_f1": 0.5531479929362574
+  }
+]

@@ -1,191 +1,376 @@
 # Cooking Up Collaboration: Training Agents for Human-AI Cooperation
 
-Our goal for this project is to explore state-of-the-art approaches to agent systems in cooperative games and apply them to Overcooked AI to improve generalized cooperative adaptability across changing teammates. The main focus is on developing effective agents that enhance human-AI collaboration.
+Agents for the [Overcooked AI](https://github.com/HumanCompatibleAI/overcooked_ai) cooperative cooking game, trained via **Behavioural Cloning (BC)** on human gameplay and refined with **Proximal Policy Optimisation (PPO)**.
 
+## Project Structure
 
-# About the repo
+```
+cooking_up_collaboration/
+├── train_bc.py                 # BC training (MLP / LSTM)
+├── train_ppo.py                # PPO fine-tuning from MLP BC init (featurized obs)
+├── train_ppo_cnn.py            # PPO with CNN (lossless spatial obs)
+├── train_ppo_lstm.py           # Recurrent PPO from BC LSTM init
+├── evaluate_bc_rollouts.py     # BC self-play evaluation & video
+├── evaluate_rl_rollouts.py     # RL self-play / RL+BC evaluation & video
+├── generate_results.py         # Course-project plots and rollout summaries
+├── live_rollout.py             # RL live viewer & self-play
+│
+├── rl/                         # RL utilities
+│   ├── env_utils.py            #   Gymnasium wrapper, vec-env factory
+│   ├── callbacks.py            #   Reward shaping, episode logger, best-model ckpt
+│   ├── bc_init_utils.py        #   Transfer BC weights to SB3 policies
+│   ├── sampling_utils.py       #   Temperature-scaled sampling for SB3
+│   ├── self_play_partner.py    #   SB3 model as gym partner (RL self-play)
+│   └── models/
+│       ├── overcooked_cnn.py   #   CNN feature extractor for SB3
+│       └── rl_mlp.py           #   MLP actor-critic for SB3
+│
+├── imitation/                  # BC data pipeline & model utilities
+│   ├── datasets.py             #   Dataset / DataLoader from CSV
+│   ├── preprocessing.py        #   Featurization, filtering, splits
+│   ├── trainer.py              #   Training loop
+│   ├── constants.py
+│   ├── metrics.py
+│   ├── io_utils.py
+│   └── models/
+│       ├── mlp.py              #   MLP policy
+│       └── lstm.py             #   LSTM policy
+│
+├── data/                       # Human gameplay data & exploration
+│   └── data_exploration.ipynb
+├── tests/                      # Environment smoke tests
+├── utils/                      # Misc utilities
+└── webapp/                     # Flask webapp for human-AI play
+```
 
-## Installation and Setup
+---
 
-This repo currently only contains webapp which is modifed UI for visulaizing the agents trained for overcooked ai based on this [repo](https://github.com/HumanCompatibleAI/overcooked-demo).
+## Installation
 
-In order to build and run the development webapp, which includes a deterministic scheduler and helpful debugging logs, run
+```bash
+pip install -r requirements.txt
+```
+
+Download human gameplay data from [here](https://drive.google.com/drive/folders/1aGV8eqWeOG5BMFdUcVoP2NHU_GFPqi57) and place it under `data/`.
+
+You can follow the steps in the data_exploration.ipynb under data/ folder to check steps on how to inlcude custom collected data into training the BC models.
+
+---
+
+## 1. Behavioural Cloning (BC)
+
+Train a policy to imitate human gameplay from CSV trajectories.
+
+### Train
+
+```bash
+# MLP (recommended starting point)
+python train_bc.py --layout-name cramped_room --run-name bc_mlp_cramped_v1
+
+# LSTM
+python train_bc.py --model lstm --layout-name cramped_room --run-name bc_lstm_cramped_v1
+```
+
+Both player perspectives are used by default (`--player-mode both`).
+
+### Key parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `--model` | `mlp` | `mlp` or `lstm` |
+| `--mlp-hidden` | `64,64` | MLP hidden layer sizes |
+| `--layout-name` | `None` | Filter to one layout (recommended) |
+| `--epochs` | `50` | |
+| `--lr` | `1e-3` | |
+| `--early-stop-patience` | `5` | On validation loss |
+
+### Evaluate
+
+```bash
+# Headless (stats only)
+python evaluate_bc_rollouts.py \
+  --checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
+  --layout-name cramped_room \
+  --n-episodes 20
+
+# Live viewer
+python evaluate_bc_rollouts.py \
+  --checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
+  --layout-name cramped_room \
+  --n-episodes 5 --render --fps 10
+
+# Save videos
+python evaluate_bc_rollouts.py \
+  --checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
+  --layout-name cramped_room \
+  --n-episodes 10 --save-video outputs/bc_videos --fps 10
+```
+
+### Outputs
+
+Saved under `trained_models/bc/<run-name>/`:
+
+- `best.pt` — best checkpoint (by val loss)
+- `config.json` — architecture & hyperparameters
+- `metrics.json`, `split_summary.json`
+
+---
+
+## 2. PPO Fine-Tuning from BC (`train_ppo.py`)
+
+**Recommended RL path.** Initialises PPO weights from a trained BC MLP checkpoint, then fine-tunes against the BC partner using sparse reward only. The agent alternates between player 0 and player 1 each episode so a single model can play either slot.
+
+### Train
+
+```bash
+python train_ppo.py \
+  --bc-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
+  --layout cramped_room \
+  --run-name ppo_cramped_v1
+```
+
+### Key parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `--bc-checkpoint` | (required) | BC model for partner & weight init |
+| `--no-bc-init` | off | Skip weight init (train from scratch) |
+| `--player-idx` | `alternate` | `0`, `1`, or `alternate` |
+| `--lr` | `1e-4` | Linear decay to 0 |
+| `--clip-range` | `0.15` | |
+| `--ent-coef` | `0.02` | |
+| `--n-epochs` | `5` | |
+| `--reward-shaping-start` | `0.0` | Sparse only (BC init doesn't need shaping) |
+| `--total-timesteps` | `1000000` | |
+| `--n-envs` | `8` | Parallel environments |
+
+### Why BC init works
+
+The BC policy already knows how to pick up onions, place them, and deliver soup. PPO refines this competent starting point, discovering better coordination strategies that BC's offline imitation misses. Without BC init, PPO from scratch takes much longer and often fails to find the sparse delivery reward.
+
+### Outputs
+
+Saved under `trained_models/rl/<run-name>/`:
+
+- `best_model.zip` — best by rolling mean sparse reward
+- `final_model.zip` — end of training
+- `train_config.json` — full hyperparameters
+
+TensorBoard: `logs/ppo_curriculum/<run-name>/`
+
+### Evaluate
+
+```bash
+# RL self-play (same model as both players)
+python evaluate_rl_rollouts.py \
+  --checkpoint trained_models/rl/ppo_cramped_v1/best_model.zip \
+  --layout-name cramped_room \
+  --n-episodes 20
+
+# RL + BC partner
+python evaluate_rl_rollouts.py \
+  --checkpoint trained_models/rl/ppo_cramped_v1/best_model.zip \
+  --partner-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
+  --layout-name cramped_room \
+  --n-episodes 20
+
+# With live rendering
+python evaluate_rl_rollouts.py \
+  --checkpoint trained_models/rl/ppo_cramped_v1/best_model.zip \
+  --layout-name cramped_room \
+  --n-episodes 5 --render --fps 10
+
+# Save videos + stats JSON
+python evaluate_rl_rollouts.py \
+  --checkpoint trained_models/rl/ppo_cramped_v1/best_model.zip \
+  --layout-name cramped_room \
+  --n-episodes 10 \
+  --save-video outputs/rl_videos \
+  --output results/rl_stats.json
+```
+
+Produces the same metrics as `evaluate_bc_rollouts.py`: mean reward, delivery rate, cook started rate, stuck rate, per-episode breakdowns.
+
+---
+
+## Project Results / Plots
+
+Generate the course-project result plots from the configured BC/PPO checkpoints and TensorBoard logs:
+
+```powershell
+python generate_results.py --n-episodes 50 --horizon 400 --force-eval
+```
+
+This evaluates each configured pairing for 50 episodes of 400 steps and writes:
+
+- rollout data to `results/data/rollout_evaluation.json`
+- human-human reference stats to `results/data/human_human_reference.json`
+- summary CSV to `results/data/rollout_summary.csv`
+- plots to `results/plots/`
+
+The checkpoint paths, PPO TensorBoard log paths, human-human trajectory directory, plotted methods, and layout labels are configured in `results/config.json`. The human-human reference plot uses recorded human-human episodes from `data/trajectories`; those episodes are usually about 800 steps, so it is a reference plot rather than an apples-to-apples 400-step comparison. After the first full run, omit `--force-eval` to reuse cached rollout data and only regenerate plots:
+
+```powershell
+python generate_results.py --n-episodes 50 --horizon 400
+```
+
+To regenerate only BC validation and PPO training-curve plots without rollouts:
+
+```powershell
+python generate_results.py --skip-rollouts
+```
+
+---
+
+## 3. PPO with CNN (`train_ppo_cnn.py`)
+
+Uses lossless spatial observations `(H, W, C)` instead of the 96-D featurized vector. The BC partner still receives featurized observations. Starts from scratch (no weight transfer possible), so reward shaping is annealed from dense to sparse.
+
+### Train
+
+```bash
+python train_ppo_cnn.py \
+  --bc-checkpoint trained_models/bc/bc_mlp_cramped_v1/best.pt \
+  --layout cramped_room \
+  --run-name cnn_v1
+```
+
+### Key parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `--features-dim` | `64` | CNN embedding dimension |
+| `--reward-shaping-start` | `1.0` | Dense shaping (needed from scratch) |
+| `--reward-shaping-end` | `0.0` | Anneals to sparse |
+| `--lr` | `3e-4` | Linear decay |
+| `--ent-coef` | `0.05` | Higher exploration |
+| `--total-timesteps` | `1000000` | |
+
+### Outputs
+
+Same structure as `train_ppo.py`. TensorBoard: `logs/ppo_cnn_curriculum/<run-name>/`
+
+---
+
+## Reward Design
+
+Overcooked gives a **sparse +20 reward** per soup delivery and nothing otherwise. To help RL agents learn, the `overcooked_ai` library provides a **potential-based shaping function** that gives dense feedback for subtask progress (moving toward ingredients, picking up items, starting cooking, etc.). This potential function computes `phi(s') - phi(s)` each step, its positive when the agent moves toward useful states and negative when it moves away.
+
+### BC-initialised PPO (`train_ppo.py`) — sparse reward only
+
+When the policy starts from BC weights, it already knows the full task sequence. We found that adding potential-based shaping to an already-competent policy is **actively harmful**: the shaping function generates negative deltas for any deviation from the optimal path, which overwhelms the +20 delivery reward and causes the policy to degrade. The fix was simple — **disable shaping entirely** (`reward_shaping_start=0.0`) and let PPO refine the BC policy using only the sparse delivery signal.
+
+### CNN PPO (`train_ppo_cnn.py`) — annealed shaping
+
+The CNN policy starts from random weights and must learn visual features from scratch. Here the potential-based shaping **is** useful as it provides the dense gradient signal needed to discover that picking up onions, placing them in pots, and delivering soup are rewarding subtasks. Shaping starts at `1.0` and linearly anneals to `0.0` over training, so the final policy optimises for actual deliveries.
+
+### Reward clipping
+
+Per-step rewards are clipped to `[-5, +5]` by default (`--reward-clip`) to prevent large potential deltas from destabilising training. When shaping is off (BC-init path), this only clips the sparse reward which is already bounded.
+
+### Event penalties
+
+The wrapper also applies small penalties for wasteful actions that the potential function doesn't catch:
+
+| Event | Penalty |
+|---|---|
+| Catastrophic onion/tomato potting | -0.20 |
+| Useless onion/tomato potting | -0.10 |
+| Soup drop | -0.30 |
+
+These are scaled by `reward_shaping_coef`, so they're inactive when shaping is off.
+
+---
+
+## 4. Recurrent PPO from BC LSTM (`train_ppo_lstm.py`)
+
+Fine-tunes a RecurrentPPO (LSTM) policy initialised from a BC LSTM checkpoint. Requires `sb3-contrib`.
+
+```bash
+python train_ppo_lstm.py \
+  --bc-init-checkpoint trained_models/bc/bc_lstm_cramped_v1/best.pt \
+  --partner-checkpoints trained_models/bc/bc_lstm_cramped_v1/best.pt \
+  --layout cramped_room \
+  --run-name ppo_lstm_v1
+```
+
+---
+
+## 5. Live Rollout Viewer
+
+Watch trained RL agents play in real time with optional video recording.
+
+### RL agent + BC partner
+
+```bash
+python live_rollout.py \
+  --checkpoint trained_models/rl/ppo_cramped_v1/best_model.zip \
+  --algo ppo \
+  --layout cramped_room \
+  --fps 10
+```
+
+The partner checkpoint is auto-detected from `train_config.json`. Override with `--partner-checkpoint`.
+
+### RL self-play (same model controls both players)
+
+```bash
+python live_rollout.py \
+  --checkpoint trained_models/rl/ppo_cramped_v1/best_model.zip \
+  --algo ppo \
+  --layout cramped_room \
+  --self-play \
+  --player-idx alternate \
+  --fps 10
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--self-play` | RL model plays both slots |
+| `--player-idx` | `0`, `1`, or `alternate` |
+| `--sampling-mode` | `sample` (stochastic) or `argmax` (deterministic) |
+| `--sampling-temperature` | Logit temperature (default 1.3) |
+| `--save-video PATH` | Save MP4 |
+| `--no-display` | Headless (combine with `--save-video`) |
+| `--obs-mode` | `auto`, `featurized`, or `lossless` |
+
+---
+
+## Player Index Alternation
+
+All PPO training scripts default to `--player-idx alternate`, which randomly assigns the learner to player 0 or player 1 each episode. This means:
+
+- A single trained model can play **either** player slot at evaluation time
+- Enables **RL self-play** evaluation (same model as both players)
+- The observation encoding from `overcooked_ai` is perspective-aware — each player sees "self" and "partner" features from their own viewpoint
+
+Set `--player-idx 0` or `--player-idx 1` to fix the learner to one slot.
+
+---
+
+## Webapp
+
+A Flask webapp for human-AI play, based on [overcooked-demo](https://github.com/HumanCompatibleAI/overcooked-demo).
+
 ```bash
 cd webapp
-./up.sh
-```
-By default this now reuses existing Docker images.  
-If you need to rebuild:
-```bash
-./up.sh --build      # incremental rebuild with cache
-./up.sh --rebuild    # full no-cache rebuild
-```
-If you prefer the old silent/background behavior:
-```bash
-./up.sh --detach
+./up.sh            # start
+./up.sh --build    # rebuild
+./down.sh          # stop
 ```
 
-If needed use the below, if Docker's build cache is corrupted
-```bash
-docker system prune -f
-```
-this should open this webapp under http://localhost, by creating a docker build. **I cannot seem to install it anyother way easily, cause the dependences are a mess!! like really bad took 1 day to fix it.**
+Opens at [http://localhost](http://localhost). Collect human trajectories at [http://localhost/psiturk](http://localhost/psiturk).
 
-Note: I tested this on WSL so Mac guys you might need to test this thing out yourselves.
+### Deploying trained agents
 
-To spin it down, use
-```bash
-./down.sh
-```
+Place agent files under `webapp/server/static/assets/agents/<AgentName>/`:
 
-## Collecting Human Data for Imitation Learning
-
-Currently the webapp is configured for Amazon Mechanical Turk (but I modified it for localhost), and to test it out open http://localhost/psiturk. It will automatically start the game and collect trajectory data under `webapp/server/data/trajectories/`.
-
-**Note: To configure the game settings, you can check the config.json file under webapp/server/ folder.**
-
-### Trajectory Data Format
-
-Files are saved with the naming convention: `game_{game_id}_{session_id}_{game_type}_{timestamp}.json`
-
-Example filenames:
-- `game_0_a3f2b1c4_human-human_20260208_175230.json`
-- `game_1_b7e9d2f1_human-ai_20260208_175315.json`
-
-Each JSON file contains:
-```json
-{
-    "uid": "unique_identifier_timestamp",
-    "session_id": "a3f2b1c4",
-    "game_id": 0,
-    "game_type": "human-human",
-    "timestamp": "20260208_175230",
-    "trajectory": [
-        {
-            "state": "<OvercookedState JSON>",
-            "joint_action": "<tuple of actions>",
-            "reward": "<int>",
-            "time_left": "<float>",
-            "score": "<float>",
-            "time_elapsed": "<float>",
-            "cur_gameloop": "<int>",
-            "layout": "<JSON terrain matrix>",
-            "layout_name": "<string>",
-            "trial_id": "<string>",
-            "player_0_id": "<string>",
-            "player_1_id": "<string>",
-            "player_0_is_human": "<bool>",
-            "player_1_is_human": "<bool>"
-        }
-    ]
-}
-```
-
-The `trajectory` array contains all state-action transitions for the entire game session.
-
-### Screenshot Data
-
-Screenshots are automatically saved alongside trajectory data in the `data/screenshots/` directory.
-
-Directory naming convention: `game_{game_id}_{session_id}_{game_type}_{timestamp}/`
-
-Example screenshot directories:
-- `game_0_a3f2b1c4_human-human_20260208_175230/`
-  - `frame_0000.png` (first frame)
-  - `frame_0010.png`
-  - `frame_0020.png`
-  - `frame_0030.png`
-  - ...
-  - `frame_0900.png` (last frame)
-
-**Screenshot Sampling:**
-- The game runs at 30 FPS (frames per second)
-- Screenshots are saved every 10 frames
-- This means one screenshot is captured every ~0.33 seconds of gameplay
-- A 30-second game will generate approximately 90 screenshots
-
-
-## Behaviour Cloning
-
-You can download the original data collected in the overcooked AI repo [here](https://drive.google.com/drive/folders/1aGV8eqWeOG5BMFdUcVoP2NHU_GFPqi57) and then palce it under `data/` in the root folder of this repo.
-
-Right now BC training is setup from csv first (`data/2019_hh_trials.csv`) and supports both models:
-- LSTM (default)
-- MLP
-
-To train:
-```bash
-python train_bc.py --model lstm --run-name bc_lstm_v1
-```
-or
-```bash
-python train_bc.py --model mlp --run-name bc_mlp_v1
-```
-
-Default training uses both player perspectives in one shared policy (`--player-mode both`).
-
-To train single-player BC for ablations:
-```bash
-python train_bc.py --model lstm --player-mode single --player-idx 0 --run-name bc_lstm_p0
-```
-
-### What data is actually used as input?
-
-For each timestep row in csv:
-- `state` is parsed into OvercookedState
-- then we run Overcooked featurizer (`mdp.featurize_state`)
-- in default mode (`--player-mode both`), both player 0 and player 1 views are added as supervised samples
-- this gives feature vectors (typically 96 dim)
-
-Label/target is from `joint_action`:
-- default: both players are used (shared policy training)
-- optional ablation: only one selected player with `--player-mode single --player-idx {0|1}`
-
-Action space is 6 classes:
-- `UP`, `DOWN`, `LEFT`, `RIGHT`, `STAY`, `INTERACT`
-
-### Are we training all layouts in csv?
-
-Yes. Current pipeline uses all layouts available in the csv and then does split by `trial_id` (not by layout holdout).  
-So if your csv has multiple layouts (like `cramped_room`, `coordination_ring`, `asymmetric_advantages`, `random0`, `random3`), all of them are used.
-
-### Training outputs
-
-Each run saves files like:
-- `best.pt`
-- `last.pt`
-- `metrics.json`
-- `config.json`
-- `split_summary.json`
-- `preprocessing_report.json`
-
-Default output dir right now is:
-```bash
-trained_models/bc/
-```
-
-## Running BC Models in the Webapp (PyTorch)
-
-Now webapp can load BC PyTorch models directly (no tensorflow conversion needed).
-
-It works by adding an agent folder under:
-```bash
-webapp/server/static/assets/agents/<YourAgentName>/
-```
-
-Put these files inside:
-- `best.pt`
+- `best.pt` or `best_model.zip`
 - `agent_manifest.json`
 
-Then restart webapp:
-```bash
-cd webapp
-./up.sh
-```
-
-Your folder name shows up in agent dropdown automatically.
-
-### Example manifest (MLP)
+Example manifest (BC MLP):
 
 ```json
 {
@@ -193,39 +378,38 @@ Your folder name shows up in agent dropdown automatically.
   "model_type": "mlp",
   "checkpoint": "best.pt",
   "sampling_mode": "sample",
-  "sampling_temperature": 1.0,
-  "supported_layouts": ["cramped_room", "coordination_ring", "asymmetric_advantages", "random0", "random3"],
+  "supported_layouts": ["cramped_room"],
   "input_dim": 96,
   "num_actions": 6,
-  "mlp_hidden": [256, 128],
-  "dropout": 0.1,
+  "mlp_hidden": [64, 64],
   "planner_cache_dir": ".cache/overcooked_planners"
 }
 ```
 
-### Example manifest (LSTM)
+Example manifest (RL PPO):
 
 ```json
 {
-  "type": "bc_torch",
-  "model_type": "lstm",
-  "checkpoint": "best.pt",
+  "type": "rl_torch",
+  "algo": "ppo",
+  "policy": "MlpPolicy",
+  "checkpoint": "best_model.zip",
+  "supported_layouts": ["cramped_room"],
   "sampling_mode": "sample",
-  "sampling_temperature": 1.0,
-  "supported_layouts": ["cramped_room", "coordination_ring", "asymmetric_advantages", "random0", "random3"],
-  "input_dim": 96,
-  "num_actions": 6,
-  "seq_len": 20,
-  "hidden_dim": 128,
-  "num_layers": 1,
-  "dropout": 0.1,
   "planner_cache_dir": ".cache/overcooked_planners"
 }
 ```
 
-Note:
-- If selected layout is not in `supported_layouts`, BC agent safely returns `STAY`.
-- `player_idx` in manifest is optional. If omitted, the agent uses its runtime slot (player 0 or player 1).
-- Default inference now matches Overcooked style (`sampling_mode="sample"`), which helps avoid BC-vs-BC symmetry lock at spawn.
-- For deterministic behavior, set `sampling_mode` to `"argmax"` (and optionally `deadlock_break_after` > 0).
-- Since server requirements now include `torch`, do a docker rebuild if needed.
+---
+
+## `rl/` Module Reference
+
+| File | Purpose |
+|---|---|
+| `env_utils.py` | `OvercookedRLWrapper` (Gymnasium env), `make_overcooked_vec_env` factory. Handles dual obs modes, player-idx alternation, reward shaping, partner integration. |
+| `callbacks.py` | `LinearRewardShapingCallback` (anneal shaping coef), `EpisodeRewardLoggerCallback` (per-episode sparse/shaped/total), `BestModelCheckpoint` (save on best sparse reward). |
+| `bc_init_utils.py` | `transfer_bc_mlp_to_sb3_policy` (load BC weights into PPO), checkpoint loading utilities. |
+| `sampling_utils.py` | Temperature-scaled logit sampling for SB3 policies. |
+| `self_play_partner.py` | `SB3SelfPlayPartner` — wraps an SB3 PPO model to act as gym partner. |
+| `models/overcooked_cnn.py` | `OvercookedCNN` — CNN feature extractor for lossless observations. |
+| `models/rl_mlp.py` | `RLActorCriticPolicy` — MLP actor-critic with separate policy/value heads. |

@@ -1,0 +1,17 @@
+{
+  "type": "rl_torch",
+  "algo": "ppo",
+  "policy": "MlpPolicy",
+  "checkpoint": "best_model.zip",
+  "supported_layouts": [
+    "asymmetric_advantages"
+  ],
+  "input_dim": 96,
+  "num_actions": 6,
+  "sampling_mode": "sample",
+  "sampling_temperature": 1.0,
+  "deterministic": false,
+  "learning_rate": 0.0001,
+  "clip_range": 0.15,
+  "planner_cache_dir": ".cache/overcooked_planners"
+}

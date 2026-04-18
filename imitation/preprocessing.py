@@ -30,11 +30,14 @@ class TrialRecord:
     layout_name: str
     layout_grid: list[str] | None
     steps: list[StepRecord]
+    total_sparse_reward: float = 0.0
+    num_steps: int = 0
 
 
 @dataclass
 class FeaturizedTrial:
     trial_id: str
+    split_group_id: str
     layout_name: str
     x: np.ndarray
     y: np.ndarray
@@ -98,6 +101,7 @@ def build_trial_records(rows: list[dict[str, str]]) -> tuple[list[TrialRecord], 
         layout_name = None
         layout_grid = None
         steps: list[StepRecord] = []
+        total_sparse_reward = 0.0
 
         for row in sorted_rows:
             row_layout = row.get("layout_name")
@@ -136,6 +140,11 @@ def build_trial_records(rows: list[dict[str, str]]) -> tuple[list[TrialRecord], 
             except (TypeError, ValueError):
                 timestep = len(steps)
 
+            try:
+                total_sparse_reward += float(row.get("reward", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+
             steps.append(StepRecord(timestep=timestep, state_dict=state_dict, action_ids=action_ids))
 
         if not steps or layout_name is None:
@@ -149,6 +158,8 @@ def build_trial_records(rows: list[dict[str, str]]) -> tuple[list[TrialRecord], 
                 layout_name=layout_name,
                 layout_grid=layout_grid,
                 steps=steps,
+                total_sparse_reward=total_sparse_reward,
+                num_steps=len(steps),
             )
         )
 
@@ -275,9 +286,10 @@ def featurize_trials_with_overcooked(
             layout_to_artifacts[signature] = (mdp, mlam)
 
         mdp, mlam = layout_to_artifacts[signature]
-        x_rows = []
-        y_rows = []
-        slot_rows = []
+        per_player_buffers = {
+            p: {"x": [], "y": [], "slot_ids": []}
+            for p in sample_player_indices
+        }
 
         for step in trial.steps:
             try:
@@ -287,10 +299,10 @@ def featurize_trials_with_overcooked(
                 report["featurization_errors"] += 1
                 continue
 
-            for sample_player_idx in sample_player_indices:
+            for p in sample_player_indices:
                 try:
-                    feat = np.asarray(feat_by_player[sample_player_idx], dtype=np.float32)
-                    action_id = int(step.action_ids[sample_player_idx])
+                    feat = np.asarray(feat_by_player[p], dtype=np.float32)
+                    action_id = int(step.action_ids[p])
                 except Exception:
                     report["featurization_errors"] += 1
                     continue
@@ -303,26 +315,28 @@ def featurize_trials_with_overcooked(
                         f"expected {expected_feature_dim}, found {feat.shape[0]}"
                     )
 
-                x_rows.append(feat)
-                y_rows.append(action_id)
-                slot_rows.append(sample_player_idx)
+                per_player_buffers[p]["x"].append(feat)
+                per_player_buffers[p]["y"].append(action_id)
+                per_player_buffers[p]["slot_ids"].append(p)
 
-        if not x_rows:
-            report["empty_trials_after_featurization"] += 1
-            continue
-
-        x = np.stack(x_rows, axis=0).astype(np.float32)
-        y = np.asarray(y_rows, dtype=np.int64)
-        slot_ids = np.asarray(slot_rows, dtype=np.int64)
-        featurized_trials.append(
-            FeaturizedTrial(
-                trial_id=trial.trial_id,
-                layout_name=trial.layout_name,
-                x=x,
-                y=y,
-                slot_ids=slot_ids,
+        any_emitted = False
+        for p, buf in per_player_buffers.items():
+            if not buf["x"]:
+                continue
+            any_emitted = True
+            featurized_trials.append(
+                FeaturizedTrial(
+                    trial_id=f"{trial.trial_id}_p{p}" if player_mode == "both" else trial.trial_id,
+                    split_group_id=trial.trial_id,
+                    layout_name=trial.layout_name,
+                    x=np.stack(buf["x"], axis=0).astype(np.float32),
+                    y=np.asarray(buf["y"], dtype=np.int64),
+                    slot_ids=np.asarray(buf["slot_ids"], dtype=np.int64),
+                )
             )
-        )
+
+        if not any_emitted:
+            report["empty_trials_after_featurization"] += 1
 
     report["kept_trials"] = len(featurized_trials)
     report["kept_rows"] = int(sum(trial.x.shape[0] for trial in featurized_trials))
@@ -341,15 +355,18 @@ def split_by_trial_id(
         raise ValueError(f"train_ratio must be in (0, 1), got {train_ratio}")
     if val_ratio < 0 or val_ratio >= 1:
         raise ValueError(f"val_ratio must be in [0, 1), got {val_ratio}")
-    if train_ratio + val_ratio >= 1:
-        raise ValueError("train_ratio + val_ratio must be < 1")
+    if train_ratio + val_ratio > 1:
+        raise ValueError("train_ratio + val_ratio must be <= 1")
 
-    trials_by_id = {trial.trial_id: trial for trial in trials}
-    trial_ids = list(trials_by_id.keys())
+    groups: dict[str, list[FeaturizedTrial]] = defaultdict(list)
+    for trial in trials:
+        groups[trial.split_group_id].append(trial)
+
+    group_ids = list(groups.keys())
     rng = random.Random(seed)
-    rng.shuffle(trial_ids)
+    rng.shuffle(group_ids)
 
-    n_total = len(trial_ids)
+    n_total = len(group_ids)
     n_train = int(n_total * train_ratio)
     n_val = int(n_total * val_ratio)
 
@@ -359,15 +376,31 @@ def split_by_trial_id(
         n_train = n_total - 1
     if n_val < 0:
         n_val = 0
-    if n_train + n_val >= n_total:
-        n_val = max(0, n_total - n_train - 1)
+    if n_train + n_val > n_total:
+        n_val = max(0, n_total - n_train)
 
-    train_ids = set(trial_ids[:n_train])
-    val_ids = set(trial_ids[n_train : n_train + n_val])
-    test_ids = set(trial_ids[n_train + n_val :])
+    train_ids = set(group_ids[:n_train])
+    val_ids = set(group_ids[n_train : n_train + n_val])
+    test_ids = set(group_ids[n_train + n_val :])
 
-    train_trials = [trials_by_id[trial_id] for trial_id in trial_ids if trial_id in train_ids]
-    val_trials = [trials_by_id[trial_id] for trial_id in trial_ids if trial_id in val_ids]
-    test_trials = [trials_by_id[trial_id] for trial_id in trial_ids if trial_id in test_ids]
+    train_trials = [t for gid in group_ids if gid in train_ids for t in groups[gid]]
+    val_trials = [t for gid in group_ids if gid in val_ids for t in groups[gid]]
+    test_trials = [t for gid in group_ids if gid in test_ids for t in groups[gid]]
 
     return train_trials, val_trials, test_trials
+
+
+def filter_trials(
+    trials: list[TrialRecord],
+    layout_name: str | None = None,
+    min_episode_steps: int = 0,
+    min_total_reward: float = -1e9,
+) -> list[TrialRecord]:
+    out = trials
+    if layout_name is not None:
+        out = [t for t in out if t.layout_name == layout_name]
+    out = [
+        t for t in out
+        if t.num_steps >= min_episode_steps and t.total_sparse_reward >= min_total_reward
+    ]
+    return out
